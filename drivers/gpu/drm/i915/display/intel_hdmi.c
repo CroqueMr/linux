@@ -2494,8 +2494,10 @@ int intel_hdmi_compute_config(struct intel_encoder *encoder,
 			.sink_standard_v2 = edid && intel_dv_lab_edid(edid->data, edid->length),
 			.hdmi = pipe_config->has_hdmi_sink && pipe_config->has_infoframe &&
 				connector->base.display_info.has_hdmi_infoframe,
-			.native_hdmi = !enc_to_dig_port(encoder)->lspcon.active &&
-				enc_to_intel_hdmi(encoder)->dp_dual_mode.type == DRM_DP_DUAL_MODE_NONE,
+			.native_hdmi = intel_dv_lab_native_hdmi(
+				enc_to_dig_port(encoder)->lspcon.active,
+				enc_to_intel_hdmi(encoder)->dp_dual_mode.type != DRM_DP_DUAL_MODE_NONE,
+				intel_bios_encoder_supports_dp_dual_mode(encoder->devdata)),
 			.rgb = pipe_config->output_format == INTEL_OUTPUT_FORMAT_RGB &&
 				pipe_config->sink_format == INTEL_OUTPUT_FORMAT_RGB,
 			.limited_range = pipe_config->limited_color_range,
