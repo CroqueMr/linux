@@ -1940,7 +1940,7 @@ static bool intel_hdmi_source_bpc_possible(struct intel_display *display, int bp
 {
 	switch (bpc) {
 	case 12:
-		return !HAS_GMCH(display);
+		return !HAS_GMCH(display) && DISPLAY_VER(display) <= 10;
 	case 10:
 		return DISPLAY_VER(display) >= 11;
 	case 8:
