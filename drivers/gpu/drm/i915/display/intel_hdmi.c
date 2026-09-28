@@ -773,10 +773,17 @@ intel_hdmi_compute_avi_infoframe(struct intel_encoder *encoder,
 	drm_hdmi_avi_infoframe_content_type(frame, conn_state);
 
 	if (to_intel_digital_connector_state(conn_state)->dv_lab_standard) {
+		const struct drm_property_blob *edid = conn_state->connector->edid_blob_ptr;
+		struct dvbridge_sink_caps caps = dvbridge_parse_edid(
+			edid ? edid->data : NULL, edid ? edid->length : 0);
+
 		/* RGB is a byte tunnel here, not an RGB color-managed picture. */
 		frame->video_code = intel_dv_lab_avi_vic(drm_match_cea_mode(adjusted_mode));
 		if (!frame->video_code)
 			return false;
+		/* HDMI-1.4b carries its 4K timing in the vendor packet. */
+		if (caps.legacy_vsif && frame->video_code >= 93 && frame->video_code <= 95)
+			frame->video_code = 0;
 		frame->colorspace = HDMI_COLORSPACE_RGB;
 		frame->colorimetry = HDMI_COLORIMETRY_NONE;
 		frame->extended_colorimetry = 0;
@@ -844,13 +851,25 @@ intel_hdmi_compute_hdmi_infoframe(struct intel_encoder *encoder,
 	if (to_intel_digital_connector_state(conn_state)->dv_lab_standard) {
 		struct hdmi_dolby_vendor_infoframe *dv =
 			&crtc_state->infoframes.hdmi.vendor.dolby;
+		const struct drm_property_blob *edid = conn_state->connector->edid_blob_ptr;
+		struct dvbridge_sink_caps caps = dvbridge_parse_edid(
+			edid ? edid->data : NULL, edid ? edid->length : 0);
+		unsigned int vic = drm_match_cea_mode(&crtc_state->hw.adjusted_mode);
 
 		/* AVI carries the CTA timing. Reserve the vendor slot for Dolby;
 		 * do not generate HDMI-1.4's competing 4K VIC vendor packet.
 		 */
-		if (!intel_dv_lab_avi_vic(drm_match_cea_mode(&crtc_state->hw.adjusted_mode)) ||
+		if (caps.status != DV_EDID_STANDARD || !intel_dv_lab_avi_vic(vic) ||
 		    (crtc_state->hw.adjusted_mode.flags & DRM_MODE_FLAG_3D_MASK))
 			return false;
+		if (caps.legacy_vsif) {
+			hdmi_vendor_infoframe_init(frame);
+			frame->dolby_vision = true;
+			/* HDMI VIC 1/2/3 = CTA 95/94/93. Other eligible modes
+			 * keep their timing in AVI; no simultaneous second VSIF. */
+			frame->vic = vic >= 93 && vic <= 95 ? 96 - vic : 0;
+			return hdmi_vendor_infoframe_check(frame) == 0;
+		}
 		hdmi_dolby_vendor_infoframe_init(dv);
 		dv->signal = true;
 		return hdmi_dolby_vendor_infoframe_check(dv) == 0;
@@ -2476,6 +2495,11 @@ int intel_hdmi_compute_config(struct intel_encoder *encoder,
 		drm_dbg_kms(display->drm,
 			    "unsupported HDMI clock (%d kHz), rejecting mode\n",
 			    pipe_config->hw.adjusted_mode.crtc_clock);
+		if (to_intel_digital_connector_state(conn_state)->dv_lab_standard &&
+		    __ratelimit(&connector->dv_log_limit))
+			drm_err(display->drm,
+				"DVBridge: HDMI format/clock rejected errno=%d connector=%u clock_khz=%d\n",
+				ret, connector->base.base.id, adjusted_mode->crtc_clock);
 		return ret;
 	}
 
@@ -2488,10 +2512,12 @@ int intel_hdmi_compute_config(struct intel_encoder *encoder,
 
 	if (to_intel_digital_connector_state(conn_state)->dv_lab_standard) {
 		const struct drm_property_blob *edid = connector->base.edid_blob_ptr;
+		struct dvbridge_sink_caps caps = dvbridge_parse_edid(
+			edid ? edid->data : NULL, edid ? edid->length : 0);
 		struct intel_dv_lab_link link = {
 			.requested = true,
 			.lab_enabled = display->params.enable_dv_lab && DISPLAY_VER(display) >= 12,
-			.sink_standard_v2 = edid && intel_dv_lab_edid(edid->data, edid->length),
+			.sink_standard = caps.status == DV_EDID_STANDARD,
 			.hdmi = pipe_config->has_hdmi_sink && pipe_config->has_infoframe &&
 				connector->base.display_info.has_hdmi_infoframe,
 			.native_hdmi = intel_dv_lab_native_hdmi(
@@ -2514,21 +2540,26 @@ int intel_hdmi_compute_config(struct intel_encoder *encoder,
 		};
 
 		ret = intel_dv_lab_validate(&link);
+		if (!ret && link.width == 3840 && link.rounded_refresh > 30 &&
+		    !caps.supports_2160p60)
+			ret = -EOPNOTSUPP;
 		if (ret) {
-			/* Keep a useful cause even without DRM debug. Invalid clients may
-			 * submit this state every frame, so bound the kernel log rate.
-			 * These are diagnostics, not a relaxation of transport policy.
+			/* First cause, then at most once per 30 seconds per connector.
+			 * Atomic TEST_ONLY requests also pass here. No per-frame dump.
 			 */
-			drm_err_ratelimited(display->drm,
-				"DVBridge: link rejected errno=%d connector=%u enable=%d display_ver=%u edid_standard_v2=%d native_hdmi=%d lspcon=%d dual_mode=%d vbt_dual_mode=%d hdmi=%d rgb=%d limited=%d hdr_blob=%d cloned=%d progressive=%d requested_bpc=%u pipe_bpp=%u colorspace=%u mode=%ux%u@%u\n",
-				ret, connector->base.base.id, display->params.enable_dv_lab,
-				DISPLAY_VER(display), link.sink_standard_v2, link.native_hdmi,
-				enc_to_dig_port(encoder)->lspcon.active,
-				enc_to_intel_hdmi(encoder)->dp_dual_mode.type,
-				intel_bios_encoder_supports_dp_dual_mode(encoder->devdata),
-				link.hdmi, link.rgb, link.limited_range, link.hdr_blob,
-				link.cloned, link.progressive, link.requested_bpc, link.pipe_bpp,
-				link.colorspace, link.width, link.height, link.rounded_refresh);
+			if (__ratelimit(&connector->dv_log_limit))
+				drm_err(display->drm,
+					"DVBridge: link rejected errno=%d connector=%u display_ver=%u enabled=%d edid=%s version=%u legacy_vsif=%d sink60=%d native_hdmi=%d lspcon=%d dual_mode=%d vbt_dual_mode=%d hdmi=%d rgb=%d limited=%d hdr_blob=%d cloned=%d progressive=%d bpc=%u pipe_bpp=%u colorspace=%u mode=%ux%u@%u\n",
+					ret, connector->base.base.id, DISPLAY_VER(display),
+					link.lab_enabled, dvbridge_edid_reason(caps.status),
+					caps.version, caps.legacy_vsif, caps.supports_2160p60,
+					link.native_hdmi, enc_to_dig_port(encoder)->lspcon.active,
+					enc_to_intel_hdmi(encoder)->dp_dual_mode.type,
+					intel_bios_encoder_supports_dp_dual_mode(encoder->devdata),
+					link.hdmi, link.rgb, link.limited_range, link.hdr_blob,
+					link.cloned, link.progressive, link.requested_bpc,
+					link.pipe_bpp, link.colorspace, link.width, link.height,
+					link.rounded_refresh);
 			return ret;
 		}
 		pipe_config->dither_force_disable = true;
@@ -2825,6 +2856,7 @@ intel_hdmi_add_properties(struct intel_hdmi *intel_hdmi, struct drm_connector *_
 	struct intel_display *display = to_intel_display(intel_hdmi);
 
 	if (display->params.enable_dv_lab && DISPLAY_VER(display) >= 12) {
+		ratelimit_state_init(&connector->dv_log_limit, 30 * HZ, 1);
 		connector->dv_lab_property = drm_property_create_bool(display->drm,
 			DRM_MODE_PROP_ATOMIC, "DVBRIDGE_DV_STANDARD_LAB");
 		if (connector->dv_lab_property)

@@ -4276,8 +4276,24 @@ static int hsw_compute_linetime_wm(struct intel_atomic_state *state,
 
 static bool intel_dv_lab_active(const struct intel_crtc_state *state)
 {
-	return state->infoframes.hdmi.vendor.any.oui == HDMI_DOLBY_IEEE_OUI &&
-		state->infoframes.hdmi.vendor.dolby.signal;
+	/* Both Standard DV packet forms carry byte-sensitive tunnel data. */
+	if (state->infoframes.hdmi.vendor.any.oui == HDMI_DOLBY_IEEE_OUI)
+		return state->infoframes.hdmi.vendor.dolby.signal;
+	return state->infoframes.hdmi.vendor.any.oui == HDMI_IEEE_OUI &&
+		state->infoframes.hdmi.vendor.hdmi.dolby_vision;
+}
+
+static int intel_dv_lab_scanout_reject(struct intel_crtc *crtc,
+				     const char *stage, unsigned int reasons)
+{
+	/* Shared budget also bounds TEST_ONLY retries and alternating CRTCs. */
+	static DEFINE_RATELIMIT_STATE(limit, 30 * HZ, 4);
+
+	if (__ratelimit(&limit))
+		drm_err(to_intel_display(crtc)->drm,
+			"DVBridge: scanout rejected errno=%d crtc=%u stage=%s reasons=0x%x\n",
+			-EINVAL, crtc->base.base.id, stage, reasons);
+	return -EINVAL;
 }
 
 static int intel_dv_lab_scanout_check(struct intel_atomic_state *state,
@@ -4289,29 +4305,41 @@ static int intel_dv_lab_scanout_check(struct intel_atomic_state *state,
 	const struct intel_plane_state *ip;
 	unsigned int w = s->hw.adjusted_mode.hdisplay;
 	unsigned int h = s->hw.adjusted_mode.vdisplay;
+	unsigned int reasons;
 
 	if (!s->hw.active || !intel_dv_lab_active(s))
 		return 0;
 	/* Refuse color processing/compositing, do not silently bypass a user's LUT. */
-	if (s->hw.ctm || s->hw.degamma_lut || s->hw.gamma_lut || s->pre_csc_lut ||
-	    s->post_csc_lut || s->gamma_enable || s->csc_enable || s->dither ||
-	    s->vrr.enable || s->dsc.compression_enable || s->scaler_state.scaler_users ||
-	    s->uapi.plane_mask != drm_plane_mask(primary))
-		return -EINVAL;
+	/* Reason bits: color, dither, VRR, DSC, scaler, plane mask. */
+	reasons = (!!(s->hw.ctm || s->hw.degamma_lut || s->hw.gamma_lut ||
+		       s->pre_csc_lut || s->post_csc_lut || s->gamma_enable || s->csc_enable)) |
+		 (!!s->dither << 1) | (!!s->vrr.enable << 2) |
+		 (!!s->dsc.compression_enable << 3) | (!!s->scaler_state.scaler_users << 4) |
+		 ((s->uapi.plane_mask != drm_plane_mask(primary)) << 5);
+	if (reasons)
+		return intel_dv_lab_scanout_reject(crtc, "crtc", reasons);
 	p = drm_atomic_get_new_plane_state(&state->base, primary);
 	if (!p)
 		p = primary->state; /* unchanged plane, serialized by this CRTC's lock */
-	if (!p || !p->fb || p->crtc != &crtc->base || !p->visible ||
-	    p->fb->format->format != DRM_FORMAT_XRGB8888 ||
-	    p->fb->width != w || p->fb->height != h ||
-	    p->src_x || p->src_y || p->src_w != (w << 16) || p->src_h != (h << 16) ||
-	    p->crtc_x || p->crtc_y || p->crtc_w != w || p->crtc_h != h ||
-	    p->rotation != DRM_MODE_ROTATE_0 || p->alpha != 0xffff)
-		return -EINVAL;
+	if (!p || !p->fb)
+		return intel_dv_lab_scanout_reject(crtc, "primary-missing", 1);
+	/* Reason bits: route/visible, format, allocation, source, destination,
+	 * rotation, alpha. Preserve the original admission conditions exactly.
+	 */
+	reasons = (p->crtc != &crtc->base || !p->visible) |
+		 ((p->fb->format->format != DRM_FORMAT_XRGB8888) << 1) |
+		 ((p->fb->width != w || p->fb->height != h) << 2) |
+		 ((p->src_x || p->src_y || p->src_w != (w << 16) || p->src_h != (h << 16)) << 3) |
+		 ((p->crtc_x || p->crtc_y || p->crtc_w != w || p->crtc_h != h) << 4) |
+		 ((p->rotation != DRM_MODE_ROTATE_0) << 5) | ((p->alpha != 0xffff) << 6);
+	if (reasons)
+		return intel_dv_lab_scanout_reject(crtc, "primary-layout", reasons);
 	ip = to_intel_plane_state(p);
-	if (ip->hw.ctm || ip->hw.degamma_lut || ip->hw.gamma_lut || ip->hw.lut_3d ||
-	    ip->scaler_id >= 0 || ip->force_black || ip->planar_linked_plane)
-		return -EINVAL;
+	/* Reason bits: color processing, scaler, forced black, linked plane. */
+	reasons = (!!(ip->hw.ctm || ip->hw.degamma_lut || ip->hw.gamma_lut || ip->hw.lut_3d)) |
+		 ((ip->scaler_id >= 0) << 1) | (!!ip->force_black << 2) | (!!ip->planar_linked_plane << 3);
+	if (reasons)
+		return intel_dv_lab_scanout_reject(crtc, "plane-processing", reasons);
 	return 0;
 }
 
