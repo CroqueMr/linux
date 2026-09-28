@@ -551,6 +551,8 @@ EXPORT_SYMBOL(hdmi_vendor_infoframe_init);
 
 static int hdmi_vendor_infoframe_length(const struct hdmi_vendor_infoframe *frame)
 {
+	if (frame->dolby_vision)
+		return 24;
 	/* for side by side (half) we also need to provide 3D_Ext_Data */
 	if (frame->s3d_struct >= HDMI_3D_STRUCTURE_SIDE_BY_SIDE_HALF)
 		return 6;
@@ -568,6 +570,9 @@ static int hdmi_vendor_infoframe_check_only(const struct hdmi_vendor_infoframe *
 		return -EINVAL;
 
 	/* only one of those can be supplied */
+	if (frame->dolby_vision && (frame->s3d_struct != HDMI_3D_STRUCTURE_INVALID ||
+	    frame->s3d_ext_data || frame->vic > 4))
+		return -EINVAL;
 	if (frame->vic != 0 && frame->s3d_struct != HDMI_3D_STRUCTURE_INVALID)
 		return -EINVAL;
 
@@ -1866,6 +1871,23 @@ hdmi_vendor_any_infoframe_unpack(union hdmi_vendor_any_infoframe *frame,
 	int ret;
 	u8 hdmi_video_format;
 	struct hdmi_vendor_infoframe *hvf = &frame->hdmi;
+	/* The 24-byte HDMI-OUI form signals Standard DV on older sinks. Keep
+	 * ordinary HDMI packet parsing below unchanged, and require a canonical
+	 * zero-filled tail so an unrelated vendor packet is not misidentified.
+	 */
+	if (size >= HDMI_INFOFRAME_HEADER_SIZE + 24 && ptr[2] == 24) {
+		u8 canonical[HDMI_INFOFRAME_HEADER_SIZE + 24];
+		struct hdmi_vendor_infoframe dv;
+
+		hdmi_vendor_infoframe_init(&dv);
+		dv.dolby_vision = true;
+		dv.vic = ptr[7] == 0x20 ? ptr[8] : 0;
+		if (hdmi_vendor_infoframe_pack(&dv, canonical, sizeof(canonical)) < 0 ||
+		    memcmp(canonical, buffer, sizeof(canonical)))
+			return -EINVAL;
+		*hvf = dv;
+		return 0;
+	}
 
 	/* Inspect the OUI only after checking it is present. Legacy parsing below
 	 * is deliberately unchanged, including its length/error semantics.

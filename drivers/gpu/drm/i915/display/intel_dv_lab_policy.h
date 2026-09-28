@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 /* Experimental Standard-DV RGB8 tunnel policy. No hardware accesses here.
- * Only EDID v2 and CTA progressive 1080p/2160p at 24–60 Hz are in scope.
+ * Validated EDID v0/v1/v2 and CTA progressive 1080p/2160p at 24–60 Hz.
  * Pixel packing and correctly transformed frame metadata are userspace duties;
  * passing this policy is NOT a Dolby Vision color/fidelity validation.
  */
@@ -8,52 +8,11 @@
 #define __INTEL_DV_LAB_POLICY_H__
 #include <linux/types.h>
 #include <linux/errno.h>
+#include "dvbridge_edid.h"
 
 static inline bool intel_dv_lab_edid(const u8 *edid, size_t size)
 {
-	static const u8 magic[8] = {0, 255, 255, 255, 255, 255, 255, 0};
-	unsigned int block, i, found = 0;
-	bool standard = false;
-
-	if (!edid || size < 128 || size != ((size_t)edid[126] + 1) * 128)
-		return false;
-	for (i = 0; i < 8; i++)
-		if (edid[i] != magic[i])
-			return false;
-	for (block = 0; block < size / 128; block++) {
-		const u8 *b = edid + block * 128;
-		u8 sum = 0;
-		unsigned int end, pos;
-
-		for (i = 0; i < 128; i++)
-			sum += b[i];
-		if (sum)
-			return false;
-		if (!block || b[0] != 0x02 || b[1] < 3)
-			continue;
-		end = b[2];
-		if (!end)
-			continue;
-		if (end < 4 || end > 127)
-			return false;
-		for (pos = 4; pos < end;) {
-			unsigned int len = b[pos] & 31;
-			const u8 *data = b + pos + 1;
-
-			if (pos + len + 1 > end)
-				return false;
-			/* Extended vendor video block, little-endian Dolby OUI. */
-			if ((b[pos] >> 5) == 7 && len >= 4 && data[0] == 1 &&
-			    data[1] == 0x46 && data[2] == 0xd0 && data[3] == 0) {
-				if (++found != 1 || len != 11 || (data[4] >> 5) != 2)
-					return false;
-				/* EDID v2 interface 2/3 advertises Standard DV. */
-				standard = (data[6] & 3) >= 2;
-			}
-			pos += len + 1;
-		}
-	}
-	return found == 1 && standard;
+	return dvbridge_parse_edid(edid, size).status == DV_EDID_STANDARD;
 }
 
 /* Native HDMI ports can expose a dual-mode level-shifter ID. Match the
@@ -68,7 +27,7 @@ static inline bool intel_dv_lab_native_hdmi(bool lspcon_active,
 }
 
 struct intel_dv_lab_link {
-	bool requested, lab_enabled, sink_standard_v2, hdmi, native_hdmi;
+	bool requested, lab_enabled, sink_standard, hdmi, native_hdmi;
 	bool rgb, limited_range, hdr_blob, cloned, progressive;
 	unsigned int requested_bpc, pipe_bpp, colorspace;
 	unsigned int width, height, rounded_refresh;
@@ -93,7 +52,7 @@ static inline int intel_dv_lab_validate(const struct intel_dv_lab_link *s)
 {
 	if (!s->requested)
 		return 0;
-	if (!s->lab_enabled || !s->sink_standard_v2 || !s->native_hdmi)
+	if (!s->lab_enabled || !s->sink_standard || !s->native_hdmi)
 		return -EOPNOTSUPP;
 	if (!s->hdmi || !s->rgb || s->limited_range || s->hdr_blob || s->cloned ||
 	    !s->progressive || s->requested_bpc != 8 || s->pipe_bpp != 24 ||
