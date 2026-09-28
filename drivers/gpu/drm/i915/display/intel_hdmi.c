@@ -2350,7 +2350,9 @@ static bool intel_dvbridge_hdr_deep_requested(struct intel_display *display,
 {
 	const struct hdr_output_metadata *hdr;
 
-	if (!display->params.enable_dv_lab || !display->platform.lunarlake ||
+	if (!display->params.enable_dv_lab ||
+	    (!display->platform.lunarlake &&
+	     !to_intel_digital_connector_state(state)->dv_hdr10_deep_color) ||
 	    to_intel_digital_connector_state(state)->dv_lab_standard ||
 	    state->max_requested_bpc < 10 || !state->hdr_output_metadata ||
 	    state->hdr_output_metadata->length < sizeof(*hdr))
@@ -2477,6 +2479,11 @@ int intel_hdmi_compute_config(struct intel_encoder *encoder,
 
 	if (!intel_link_bw_compute_pipe_bpp(pipe_config))
 		return -EINVAL;
+	/* This opt-in applies only to reconstructed HDR10, never ordinary Kodi HDR.
+	 * A 10-bit framebuffer alone does not prevent an 8-bit HDMI fallback. */
+	if (to_intel_digital_connector_state(conn_state)->dv_hdr10_deep_color &&
+	    !intel_dvbridge_hdr_deep_requested(display, conn_state))
+		return -EINVAL;
 
 	pipe_config->has_audio =
 		intel_hdmi_has_audio(encoder, pipe_config, conn_state) &&
@@ -2487,6 +2494,13 @@ int intel_hdmi_compute_config(struct intel_encoder *encoder,
 	 * that fails assume the user might know something we don't.
 	 */
 	ret = intel_hdmi_compute_formats(encoder, pipe_config, conn_state, true);
+	if (!ret && to_intel_digital_connector_state(conn_state)->dv_hdr10_deep_color &&
+	    pipe_config->pipe_bpp < 30) {
+		if (__ratelimit(&connector->dv_log_limit))
+			drm_info(display->drm, "DVBridge HDR10: rejecting sub-10-bit link on connector=%u bpp=%u\n",
+				 connector->base.base.id, pipe_config->pipe_bpp);
+		return -EINVAL;
+	}
 	/* Experimental DV/HDR must never override the sink bandwidth limit. */
 	if (ret && !to_intel_digital_connector_state(conn_state)->dv_lab_standard &&
 	    !intel_dvbridge_hdr_deep_requested(display, conn_state))
@@ -2861,6 +2875,10 @@ intel_hdmi_add_properties(struct intel_hdmi *intel_hdmi, struct drm_connector *_
 			DRM_MODE_PROP_ATOMIC, "DVBRIDGE_DV_STANDARD_LAB");
 		if (connector->dv_lab_property)
 			drm_object_attach_property(&_connector->base, connector->dv_lab_property, 0);
+		connector->dv_hdr10_property = drm_property_create_bool(display->drm,
+			DRM_MODE_PROP_ATOMIC, "DVBRIDGE_HDR10_DEEP_COLOR");
+		if (connector->dv_hdr10_property)
+			drm_object_attach_property(&_connector->base, connector->dv_hdr10_property, 0);
 	}
 
 	intel_attach_force_audio_property(&connector->base);
