@@ -120,8 +120,6 @@ int intel_digital_connector_atomic_set_property(struct drm_connector *connector,
 	    property == to_intel_connector(connector)->dv_hdr10_property) {
 		if (val > 1 || connector->connector_type != DRM_MODE_CONNECTOR_HDMIA)
 			return -EINVAL;
-		if (val && !display->params.enable_dv_lab)
-			return -EOPNOTSUPP;
 		intel_conn_state->dv_hdr10_deep_color = val;
 		return 0;
 	}

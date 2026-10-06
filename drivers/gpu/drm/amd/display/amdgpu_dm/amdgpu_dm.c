@@ -50,6 +50,7 @@
 #include "amdgpu_ucode.h"
 #include "atom.h"
 #include "amdgpu_dm.h"
+#include "amdgpu_dm_dv.h"
 #include "amdgpu_dm_plane.h"
 #include "amdgpu_dm_crtc.h"
 #include "amdgpu_dm_hdcp.h"
@@ -7639,6 +7640,9 @@ create_stream_for_sink(struct drm_connector *connector,
 	struct dc_link *link = NULL;
 	struct dc_sink *sink = NULL;
 
+	if (amdgpu_dm_hdr10_validate(dm_state))
+		return NULL;
+
 	drm_mode_init(&mode, drm_mode);
 	memset(&saved_mode, 0, sizeof(saved_mode));
 
@@ -7790,6 +7794,11 @@ create_stream_for_sink(struct drm_connector *connector,
 		mod_build_vsc_infopacket(stream, &stream->vsc_infopacket, stream->output_color_space, tf);
 		aconnector->sr_skip_count = AMDGPU_DM_PSR_ENTRY_DELAY;
 
+	}
+	if (dm_state->dv_standard &&
+	    amdgpu_dm_dv_configure_stream(stream, dm_state, drm_mode)) {
+		dc_stream_release(stream);
+		stream = NULL;
 	}
 finish:
 	dc_sink_release(sink);
@@ -7961,6 +7970,21 @@ int amdgpu_dm_connector_atomic_set_property(struct drm_connector *connector,
 
 	int ret = -EINVAL;
 
+	if (to_amdgpu_dm_connector(connector)->hdr10_deep_color_property &&
+	    property == to_amdgpu_dm_connector(connector)->hdr10_deep_color_property) {
+		if (val > 1)
+			return -EINVAL;
+		dm_new_state->hdr10_deep_color = val;
+		return 0;
+	}
+
+	if (property == to_amdgpu_dm_connector(connector)->dv_standard_property) {
+		if (val > 1)
+			return -EINVAL;
+		dm_new_state->dv_standard = val;
+		return 0;
+	}
+
 	if (property == dev->mode_config.scaling_mode_property) {
 		enum amdgpu_rmx_type rmx_type;
 
@@ -8023,6 +8047,17 @@ int amdgpu_dm_connector_atomic_get_property(struct drm_connector *connector,
 	struct dm_connector_state *dm_state =
 		to_dm_connector_state(state);
 	int ret = -EINVAL;
+
+	if (to_amdgpu_dm_connector(connector)->hdr10_deep_color_property &&
+	    property == to_amdgpu_dm_connector(connector)->hdr10_deep_color_property) {
+		*val = dm_state->hdr10_deep_color;
+		return 0;
+	}
+
+	if (property == to_amdgpu_dm_connector(connector)->dv_standard_property) {
+		*val = dm_state->dv_standard;
+		return 0;
+	}
 
 	if (property == dev->mode_config.scaling_mode_property) {
 		switch (dm_state->scaling) {
@@ -8721,6 +8756,17 @@ amdgpu_dm_connector_atomic_check(struct drm_connector *conn,
 
 	if (!crtc)
 		return 0;
+
+	if (to_dm_connector_state(new_con_state)->dv_standard !=
+	    to_dm_connector_state(old_con_state)->dv_standard ||
+	    to_dm_connector_state(new_con_state)->hdr10_deep_color !=
+	    to_dm_connector_state(old_con_state)->hdr10_deep_color) {
+		new_crtc_state = drm_atomic_get_crtc_state(state, crtc);
+		if (IS_ERR(new_crtc_state))
+			return PTR_ERR(new_crtc_state);
+		/* Entry and exit are real modesets, not a late infoframe update. */
+		new_crtc_state->mode_changed = true;
+	}
 
 	if (new_con_state->privacy_screen_sw_state != old_con_state->privacy_screen_sw_state) {
 		new_crtc_state = drm_atomic_get_crtc_state(state, crtc);
@@ -9479,6 +9525,7 @@ void amdgpu_dm_connector_init_helper(struct amdgpu_display_manager *dm,
 	if (connector_type == DRM_MODE_CONNECTOR_HDMIA
 		|| (connector_type == DRM_MODE_CONNECTOR_DisplayPort && !aconnector->mst_root))
 		drm_connector_attach_broadcast_rgb_property(&aconnector->base);
+	amdgpu_dm_dv_attach(aconnector);
 
 	drm_object_attach_property(&aconnector->base.base,
 				adev->mode_info.underscan_property,
@@ -12213,6 +12260,8 @@ static int dm_update_crtc_state(struct amdgpu_display_manager *dm,
 		 */
 		if (amdgpu_freesync_vid_mode &&
 		    dm_new_crtc_state->stream &&
+		    dm_new_conn_state->dv_standard == dm_old_conn_state->dv_standard &&
+		    dm_new_conn_state->hdr10_deep_color == dm_old_conn_state->hdr10_deep_color &&
 		    is_timing_unchanged_for_freesync(new_crtc_state, old_crtc_state))
 			goto skip_modeset;
 
@@ -13261,6 +13310,9 @@ static int amdgpu_dm_atomic_check(struct drm_device *dev,
 		drm_dbg_atomic(dev, "drm_atomic_helper_check_modeset() failed\n");
 		goto fail;
 	}
+	ret = amdgpu_dm_dv_add_affected(state);
+	if (ret)
+		goto fail;
 
 	/* Check connector changes */
 	for_each_oldnew_connector_in_state(state, connector, old_con_state, new_con_state, i) {
@@ -13483,6 +13535,9 @@ static int amdgpu_dm_atomic_check(struct drm_device *dev,
 		drm_dbg_atomic(dev, "drm_atomic_helper_check_planes() failed\n");
 		goto fail;
 	}
+	ret = amdgpu_dm_dv_atomic_check(state);
+	if (ret)
+		goto fail;
 
 	for_each_new_crtc_in_state(state, crtc, new_crtc_state, i) {
 		dm_new_crtc_state = to_dm_crtc_state(new_crtc_state);
@@ -13728,6 +13783,19 @@ static int amdgpu_dm_atomic_check(struct drm_device *dev,
 		dm_new_crtc_state->update_type = lock_and_validation_needed ?
 			UPDATE_TYPE_FULL : UPDATE_TYPE_FAST;
 	}
+
+	/* DC validation must not turn a byte-preserving tunnel into a color
+	 * pipeline. Recheck after global validation as well as before fast paths.
+	 */
+	ret = amdgpu_dm_dv_atomic_check(state);
+	if (ret)
+		goto fail;
+
+	/* Native DC validation/format selection owns the final depth. Never
+	 * promote a requested max bpc or framebuffer depth into a link guarantee. */
+	ret = amdgpu_dm_hdr10_atomic_check(state);
+	if (ret)
+		goto fail;
 
 	/* Must be success */
 	WARN_ON(ret);
