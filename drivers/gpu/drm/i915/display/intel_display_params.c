@@ -37,7 +37,7 @@ intel_display_param_named_unsafe(dmc_firmware_path, charp, 0400,
 	"Use /dev/null to disable DMC and runtime PM.");
 
 intel_display_param_named_unsafe(enable_dv_lab, bool, 0400,
-	"Experimental Standard-DV RGB8 tunnel lab, Lunar Lake only (default: off). "
+	"Experimental Standard-DV RGB8 tunnel, display9+ native HDMI (default: on). "
 	"Requires independently validated packed pixels and HDMI frame metadata.");
 
 intel_display_param_named_unsafe(vbt_firmware, charp, 0400,

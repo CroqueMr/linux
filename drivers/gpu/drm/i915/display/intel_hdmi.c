@@ -2350,15 +2350,17 @@ static bool intel_dvbridge_hdr_deep_requested(struct intel_display *display,
 {
 	const struct hdr_output_metadata *hdr;
 
-	if (!display->params.enable_dv_lab ||
-	    (!display->platform.lunarlake &&
-	     !to_intel_digital_connector_state(state)->dv_hdr10_deep_color) ||
+	if (DISPLAY_VER(display) < 12 ||
+	    !to_intel_digital_connector_state(state)->dv_hdr10_deep_color ||
 	    to_intel_digital_connector_state(state)->dv_lab_standard ||
+	    (state->colorspace != DRM_MODE_COLORIMETRY_BT2020_RGB &&
+	     state->colorspace != DRM_MODE_COLORIMETRY_BT2020_YCC) ||
 	    state->max_requested_bpc < 10 || !state->hdr_output_metadata ||
 	    state->hdr_output_metadata->length < sizeof(*hdr))
 		return false;
 	hdr = state->hdr_output_metadata->data;
 	return hdr->metadata_type == 0 &&
+		hdr->hdmi_metadata_type1.metadata_type == 0 &&
 		hdr->hdmi_metadata_type1.eotf == HDMI_EOTF_SMPTE_ST2084;
 }
 
@@ -2530,7 +2532,8 @@ int intel_hdmi_compute_config(struct intel_encoder *encoder,
 			edid ? edid->data : NULL, edid ? edid->length : 0);
 		struct intel_dv_lab_link link = {
 			.requested = true,
-			.lab_enabled = display->params.enable_dv_lab && DISPLAY_VER(display) >= 12,
+			.lab_enabled = display->params.enable_dv_lab &&
+				intel_dv_lab_platform_supported(DISPLAY_VER(display)),
 			.sink_standard = caps.status == DV_EDID_STANDARD,
 			.hdmi = pipe_config->has_hdmi_sink && pipe_config->has_infoframe &&
 				connector->base.display_info.has_hdmi_infoframe,
@@ -2869,12 +2872,17 @@ intel_hdmi_add_properties(struct intel_hdmi *intel_hdmi, struct drm_connector *_
 	struct intel_connector *connector = to_intel_connector(_connector);
 	struct intel_display *display = to_intel_display(intel_hdmi);
 
-	if (display->params.enable_dv_lab && DISPLAY_VER(display) >= 12) {
+	if (display->params.enable_dv_lab &&
+	    intel_dv_lab_platform_supported(DISPLAY_VER(display))) {
 		ratelimit_state_init(&connector->dv_log_limit, 30 * HZ, 1);
 		connector->dv_lab_property = drm_property_create_bool(display->drm,
 			DRM_MODE_PROP_ATOMIC, "DVBRIDGE_DV_STANDARD_LAB");
 		if (connector->dv_lab_property)
 			drm_object_attach_property(&_connector->base, connector->dv_lab_property, 0);
+	}
+
+	if (DISPLAY_VER(display) >= 12) {
+		ratelimit_state_init(&connector->dv_log_limit, 30 * HZ, 1);
 		connector->dv_hdr10_property = drm_property_create_bool(display->drm,
 			DRM_MODE_PROP_ATOMIC, "DVBRIDGE_HDR10_DEEP_COLOR");
 		if (connector->dv_hdr10_property)

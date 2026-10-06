@@ -520,7 +520,7 @@ enum intel_panel_replay_dsc_support {
 
 struct intel_connector {
 	struct drm_connector base;
-	/* Private experimental property; absent unless explicitly enabled at boot. */
+	/* Private experimental property; gated by enable_dv_lab. */
 	struct drm_property *dv_lab_property;
 	struct drm_property *dv_hdr10_property;
 	/* Diagnostics only: no influence on DV admission or recovery. */
