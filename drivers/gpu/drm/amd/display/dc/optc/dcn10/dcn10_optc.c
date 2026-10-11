@@ -608,6 +608,9 @@ bool optc1_validate_timing(
 
 	if (timing->timing_3d_format != TIMING_3D_FORMAT_NONE &&
 		timing->timing_3d_format != TIMING_3D_FORMAT_HW_FRAME_PACKING &&
+		timing->timing_3d_format != TIMING_3D_FORMAT_SW_FRAME_PACKING &&
+		timing->timing_3d_format != TIMING_3D_FORMAT_SBS_SW_PACKED &&
+		timing->timing_3d_format != TIMING_3D_FORMAT_TB_SW_PACKED &&
 		timing->timing_3d_format != TIMING_3D_FORMAT_TOP_AND_BOTTOM &&
 		timing->timing_3d_format != TIMING_3D_FORMAT_SIDE_BY_SIDE &&
 		timing->timing_3d_format != TIMING_3D_FORMAT_FRAME_ALTERNATE &&
