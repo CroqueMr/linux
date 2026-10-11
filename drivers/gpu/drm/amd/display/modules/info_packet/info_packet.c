@@ -556,6 +556,10 @@ void mod_build_hf_vsif_infopacket(const struct dc_stream_state *stream,
 			case TIMING_3D_FORMAT_TOP_AND_BOTTOM:
 			case TIMING_3D_FORMAT_TB_SW_PACKED:
 				info_packet->sb[5] = (0x6 << 4);
+				/* Some sinks (JVC D-ILA) only engage TAB when the
+				 * 3D_Ext_Data byte is present, as Amlogic sources send it.
+				 */
+				length = 6;
 				break;
 
 			default:
