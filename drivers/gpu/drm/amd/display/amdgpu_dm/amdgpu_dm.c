@@ -6985,6 +6985,63 @@ static bool adjust_colour_depth_from_display_info(
 	return false;
 }
 
+static void amdgpu_dm_hdr10_select_format(struct dc_stream_state *stream,
+		const struct drm_connector_state *con,
+		const struct drm_display_mode *mode, int requested_bpc)
+{
+	const struct dm_connector_state *state = to_dm_connector_state(con);
+	const struct drm_display_info *info = &con->connector->display_info;
+	struct dc_crtc_timing *timing = &stream->timing;
+	struct dc_crtc_timing candidate;
+
+	/* Only this private HDR10 request may trade chroma for real precision.
+	 * Keep a supported RGB10+ result and leave Vanilla/DV tunnels untouched. */
+	if (!state->hdr10_deep_color || amdgpu_dm_hdr10_validate(state) ||
+	    stream->signal != SIGNAL_TYPE_HDMI_TYPE_A || !stream->link ||
+	    stream->link->connector_signal != SIGNAL_TYPE_HDMI_TYPE_A ||
+	    requested_bpc < 10 ||
+	    (timing->pixel_encoding != PIXEL_ENCODING_RGB &&
+	     timing->pixel_encoding != PIXEL_ENCODING_YCBCR420) ||
+	    (timing->pixel_encoding == PIXEL_ENCODING_RGB &&
+	     timing->display_color_depth != COLOR_DEPTH_888 &&
+	     !drm_mode_is_420_only(info, mode)))
+		return;
+
+	/* HDMI 4:2:2 deep color uses the pixel clock's TMDS rate. Native DC
+	 * still validates the source/link; no clocks or bandwidth are forced. */
+	if (timing->pixel_encoding == PIXEL_ENCODING_RGB &&
+	    !drm_mode_is_420_only(info, mode) &&
+	    (info->color_formats & BIT(DRM_OUTPUT_COLOR_FORMAT_YCBCR422)) &&
+	    info->max_tmds_clock > 0 &&
+	    timing->pix_clk_100hz <= (unsigned int)info->max_tmds_clock * 10) {
+		timing->pixel_encoding = PIXEL_ENCODING_YCBCR422;
+		timing->display_color_depth = COLOR_DEPTH_101010;
+		return;
+	}
+	/* A CTA 4:2:0-only timing cannot be sent as RGB or 4:2:2. */
+	if (!drm_mode_is_420(info, mode)) {
+		if (timing->pixel_encoding == PIXEL_ENCODING_YCBCR420)
+			timing->display_color_depth = COLOR_DEPTH_888;
+		return;
+	}
+	/* Recompute from the separate EDID 4:2:0 deep-color capabilities,
+	 * not from the precision already reduced by the RGB attempt. */
+	candidate = *timing;
+	candidate.pixel_encoding = PIXEL_ENCODING_YCBCR420;
+	candidate.display_color_depth =
+		convert_color_depth_from_display_info(con->connector, true, requested_bpc);
+	if (!adjust_colour_depth_from_display_info(&candidate, info))
+		candidate.display_color_depth = COLOR_DEPTH_888;
+	/* Also revalidate native RGB-to-4:2:0 fallback: its depth can still
+	 * reflect RGB EDID caps. Shallow candidates reach the final guard. */
+	if (timing->pixel_encoding == PIXEL_ENCODING_YCBCR420 ||
+	    drm_mode_is_420_only(info, mode) ||
+	    (candidate.display_color_depth == COLOR_DEPTH_101010 ||
+	     candidate.display_color_depth == COLOR_DEPTH_121212 ||
+	     candidate.display_color_depth == COLOR_DEPTH_161616))
+		*timing = candidate;
+}
+
 static void fill_stream_properties_from_drm_display_mode(
 	struct dc_stream_state *stream,
 	const struct drm_display_mode *mode_in,
@@ -7131,6 +7188,7 @@ static void fill_stream_properties_from_drm_display_mode(
 		}
 	}
 
+	amdgpu_dm_hdr10_select_format(stream, connector_state, mode_in, requested_bpc);
 	stream->output_color_space = get_output_color_space(timing_out, connector_state);
 	stream->content_type = get_output_content_type(connector_state);
 }
@@ -12142,7 +12200,9 @@ static void get_freesync_config_for_crtc(
 
 	aconnector = to_amdgpu_dm_connector(new_con_state->base.connector);
 
-	new_crtc_state->vrr_supported = new_con_state->freesync_capable &&
+	/* No FreeSync capability InfoFrame while bytes carry the DV tunnel. */
+	new_crtc_state->vrr_supported = !new_con_state->dv_standard &&
+					new_con_state->freesync_capable &&
 					vrefresh >= aconnector->min_vfreq &&
 					vrefresh <= aconnector->max_vfreq;
 
