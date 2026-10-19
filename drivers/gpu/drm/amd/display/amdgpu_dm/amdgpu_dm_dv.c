@@ -139,13 +139,27 @@ static int dv_copy_packet(struct dc_info_packet *packet, const u8 *wire, size_t 
 	return 0;
 }
 
+/* Hades RC1 9a06cf50, d1e00b45: the stream owns this sink reference.
+ * A connector EDID blob may be replaced independently during hotplug. Keep
+ * our existing V2-only policy and reject lengths outside the owned buffer.
+ */
+static const struct dc_edid *dv_stream_edid(const struct dc_stream_state *stream)
+{
+	const struct dc_edid *edid;
+
+	if (!stream || !stream->sink)
+		return NULL;
+	edid = &stream->sink->dc_edid;
+	return edid->length && edid->length <= sizeof(edid->raw_edid) ? edid : NULL;
+}
+
 int amdgpu_dm_dv_configure_stream(struct dc_stream_state *stream,
 				const struct dm_connector_state *state,
 				const struct drm_display_mode *mode)
 {
 	struct drm_connector *connector = state->base.connector;
 	struct amdgpu_dm_connector *aconnector = to_amdgpu_dm_connector(connector);
-	const struct drm_property_blob *edid = connector->edid_blob_ptr;
+	const struct dc_edid *edid = dv_stream_edid(stream);
 	struct hdmi_dolby_vendor_infoframe dv;
 	struct hdmi_avi_infoframe avi;
 	struct dc_info_packet avi_packet, vsp_packet;
@@ -154,7 +168,7 @@ int amdgpu_dm_dv_configure_stream(struct dc_stream_state *stream,
 		.requested = state->dv_standard,
 		.lab_enabled = dv_standard && stream->ctx &&
 			dv_dcn_supported(stream->ctx->dce_version),
-		.sink_standard = edid && drm_dvbridge_edid(edid->data, edid->length),
+		.sink_standard = edid && drm_dvbridge_edid(edid->raw_edid, edid->length),
 		.hdmi = stream->signal == SIGNAL_TYPE_HDMI_TYPE_A &&
 			connector->display_info.is_hdmi && connector->display_info.has_hdmi_infoframe,
 		.native_hdmi = connector->connector_type == DRM_MODE_CONNECTOR_HDMIA &&
@@ -177,7 +191,7 @@ int amdgpu_dm_dv_configure_stream(struct dc_stream_state *stream,
 	if (state->hdr10_deep_color)
 		return -EINVAL;
 	/* Legacy sink signaling is qualified separately; do not widen it here. */
-	if (dvbridge_parse_edid(edid ? edid->data : NULL,
+	if (dvbridge_parse_edid(edid ? edid->raw_edid : NULL,
 				edid ? edid->length : 0).version != 2)
 		return -EOPNOTSUPP;
 	ret = drm_dvbridge_validate(&link);
@@ -352,17 +366,28 @@ int amdgpu_dm_dv_atomic_check(struct drm_atomic_commit *state)
 		    stream->output_color_space != COLOR_SPACE_SRGB ||
 		    stream->signal != SIGNAL_TYPE_HDMI_TYPE_A ||
 		    !stream->avi_infopacket.valid || !stream->vsp_infopacket.valid ||
+		    /* Recheck the DC raster after global validation, not only the plane. */
+		    stream->timing.flags.INTERLACE ||
+		    stream->timing.timing_3d_format != TIMING_3D_FORMAT_NONE ||
+		    stream->timing.h_border_left || stream->timing.h_border_right ||
+		    stream->timing.v_border_top || stream->timing.v_border_bottom ||
+		    stream->timing.h_addressable != cs->mode.hdisplay ||
+		    stream->timing.v_addressable != cs->mode.vdisplay ||
+		    stream->src.x || stream->src.y ||
+		    stream->src.width != cs->mode.hdisplay || stream->src.height != cs->mode.vdisplay ||
+		    stream->dst.x || stream->dst.y ||
+		    stream->dst.width != cs->mode.hdisplay || stream->dst.height != cs->mode.vdisplay ||
 		    stream->timing.pixel_encoding != PIXEL_ENCODING_RGB ||
 		    stream->timing.display_color_depth != COLOR_DEPTH_888 || stream->timing.flags.DSC)
 			return -EINVAL;
 		for_each_new_connector_in_state(state, connector, con, j) {
-			const struct drm_property_blob *edid = connector->edid_blob_ptr;
+			const struct dc_edid *edid = dv_stream_edid(stream);
 
 			if (con->crtc != crtc)
 				continue;
 
-			if (!edid || !drm_dvbridge_edid(edid->data, edid->length) ||
-			    dvbridge_parse_edid(edid->data, edid->length).version != 2 ||
+			if (!edid || !drm_dvbridge_edid(edid->raw_edid, edid->length) ||
+			    dvbridge_parse_edid(edid->raw_edid, edid->length).version != 2 ||
 			    connector->connector_type != DRM_MODE_CONNECTOR_HDMIA ||
 			    !to_dm_connector_state(con)->dv_standard ||
 			    to_dm_connector_state(con)->hdr10_deep_color ||
