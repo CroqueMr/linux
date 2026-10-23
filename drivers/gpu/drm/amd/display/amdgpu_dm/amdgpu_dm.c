@@ -8687,6 +8687,20 @@ create_validate_stream_for_sink(struct drm_connector *connector,
 				      dc_color_depth_to_str(stream->timing.display_color_depth),
 				      dc_status_to_str(dc_result));
 
+			/* Retry native 4:2:0 before accepting an 8-bit bandwidth fallback. */
+			if (dm_state->hdr10_deep_color &&
+			    !amdgpu_dm_hdr10_validate(dm_state) && requested_bpc >= 10 &&
+			    dc_result == DC_FAIL_BANDWIDTH_VALIDATE &&
+			    stream->timing.pixel_encoding == PIXEL_ENCODING_YCBCR422 &&
+			    !aconnector->force_yuv420_output &&
+			    drm_mode_is_420(&connector->display_info, drm_mode)) {
+				dc_stream_release(stream);
+				aconnector->force_yuv420_output = true;
+				stream = create_validate_stream_for_sink(connector, drm_mode,
+								 dm_state, old_stream);
+				aconnector->force_yuv420_output = false;
+				return stream;
+			}
 			dc_stream_release(stream);
 			stream = NULL;
 			requested_bpc -= 2; /* lower bpc to retry validation */
