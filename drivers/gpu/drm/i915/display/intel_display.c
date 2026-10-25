@@ -4404,6 +4404,9 @@ static int intel_crtc_atomic_check(struct intel_atomic_state *state,
 	ret = intel_psr2_sel_fetch_update(state, crtc);
 	if (ret)
 		return ret;
+	ret = intel_hdmi_hdr10plus_check(state, crtc);
+	if (ret)
+		return ret;
 
 	return intel_dv_lab_scanout_check(state, crtc);
 }
@@ -6920,6 +6923,7 @@ static void intel_update_crtc(struct intel_atomic_state *state,
 		commit_pipe_pre_planes(state, crtc);
 
 		intel_crtc_planes_update_arm(NULL, state, crtc);
+		intel_hdmi_hdr10plus_update(state, crtc);
 
 		commit_pipe_post_planes(state, crtc);
 
@@ -7339,6 +7343,14 @@ static void intel_atomic_dsb_prepare(struct intel_atomic_state *state,
 
 	if (state->base.legacy_cursor_update)
 		return;
+	/* Vendor packet writes must share the CPU plane commit's vblank window. */
+	if (intel_hdmi_hdr10plus_present(new_crtc_state) ||
+	    intel_hdmi_hdr10plus_present(intel_atomic_get_old_crtc_state(state, crtc))) {
+		new_crtc_state->use_flipq = false;
+		new_crtc_state->use_dsb = false;
+		intel_color_prepare_commit(state, crtc);
+		return;
+	}
 
 	/* FIXME deal with everything */
 	new_crtc_state->use_flipq =

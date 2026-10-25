@@ -28,6 +28,7 @@
  */
 
 #include <drm/drm_atomic.h>
+#include <drm/drm_hdr10plus.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_atomic_uapi.h>
 #include <drm/drm_framebuffer.h>
@@ -917,6 +918,17 @@ static int drm_atomic_connector_set_property(struct drm_connector *connector,
 		 */
 		if (state->link_status != DRM_LINK_STATUS_GOOD)
 			state->link_status = val;
+	} else if (property == config->hdr10plus_metadata_property) {
+		ret = drm_property_replace_blob_from_id(dev,
+				&state->hdr10plus_metadata, val, -1,
+				DRM_HDR10PLUS_INFOFRAME_SIZE, -1, &replaced);
+		if (ret)
+			return ret;
+		if (state->hdr10plus_metadata &&
+		    !drm_hdr10plus_infoframe_valid(state->hdr10plus_metadata->data,
+					 state->hdr10plus_metadata->length))
+			return -EINVAL;
+		return 0;
 	} else if (property == config->hdr_output_metadata_property) {
 		ret = drm_property_replace_blob_from_id(dev,
 				&state->hdr_output_metadata,
@@ -1030,6 +1042,8 @@ drm_atomic_connector_get_property(struct drm_connector *connector,
 	} else if (property == config->hdr_output_metadata_property) {
 		*val = state->hdr_output_metadata ?
 			state->hdr_output_metadata->base.id : 0;
+	} else if (property == config->hdr10plus_metadata_property) {
+		*val = state->hdr10plus_metadata ? state->hdr10plus_metadata->base.id : 0;
 	} else if (property == config->content_protection_property) {
 		*val = state->content_protection;
 	} else if (property == config->hdcp_content_type_property) {

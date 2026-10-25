@@ -91,6 +91,7 @@
 #include <drm/drm_fixed.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_edid.h>
+#include <drm/drm_hdr10plus.h>
 #include <drm/drm_eld.h>
 #include <drm/drm_mode.h>
 #include <drm/drm_utils.h>
@@ -7696,6 +7697,33 @@ static void apply_dsc_policy_for_stream(struct amdgpu_dm_connector *aconnector,
 }
 #endif
 
+static bool hdr10plus_has_frame_update(struct drm_atomic_commit *state,
+				      struct drm_crtc *crtc)
+{
+	struct drm_plane_state *plane = drm_atomic_get_new_plane_state(state, crtc->primary);
+
+	/* Packet programming accompanies the primary surface update. Do not
+	 * acknowledge metadata-only commits that leave the hardware packet stale. */
+	return plane && plane->crtc == crtc && plane->fb && to_dm_plane_state(plane)->dc_state;
+}
+
+static int fill_hdr10plus_info_packet(const struct drm_property_blob *blob,
+				     struct dc_info_packet *out)
+{
+	const u8 *packet = blob->data;
+	struct dc_info_packet result = {0};
+
+	if (!drm_hdr10plus_infoframe_valid(packet, blob->length))
+		return -EINVAL;
+	result.hb0 = packet[0];
+	result.hb1 = packet[1];
+	result.hb2 = packet[2];
+	memcpy(result.sb, packet + 3, 28);
+	result.valid = true;
+	*out = result;
+	return 0;
+}
+
 static struct dc_stream_state *
 create_stream_for_sink(struct drm_connector *connector,
 		       const struct drm_display_mode *drm_mode,
@@ -7913,6 +7941,11 @@ create_stream_for_sink(struct drm_connector *connector,
 	}
 	if (dm_state->dv_standard &&
 	    amdgpu_dm_dv_configure_stream(stream, dm_state, drm_mode)) {
+		dc_stream_release(stream);
+		stream = NULL;
+	}
+	if (stream && dm_state->base.hdr10plus_metadata &&
+	    fill_hdr10plus_info_packet(dm_state->base.hdr10plus_metadata, &stream->vsp_infopacket)) {
 		dc_stream_release(stream);
 		stream = NULL;
 	}
@@ -8879,6 +8912,9 @@ amdgpu_dm_connector_atomic_check(struct drm_connector *conn,
 		return -EINVAL;
 
 	trace_amdgpu_dm_connector_atomic_check(new_con_state);
+	if (drm_connector_check_hdr10plus(new_con_state) ||
+	    (new_con_state->hdr10plus_metadata && to_dm_connector_state(new_con_state)->dv_standard))
+		return -EINVAL;
 
 	if (conn->connector_type == DRM_MODE_CONNECTOR_DisplayPort) {
 		ret = drm_dp_mst_root_conn_atomic_check(new_con_state, &aconn->mst_mgr);
@@ -8891,6 +8927,7 @@ amdgpu_dm_connector_atomic_check(struct drm_connector *conn,
 
 	if (to_dm_connector_state(new_con_state)->dv_standard !=
 	    to_dm_connector_state(old_con_state)->dv_standard ||
+	    !!new_con_state->hdr10plus_metadata != !!old_con_state->hdr10plus_metadata ||
 	    to_dm_connector_state(new_con_state)->hdr10_deep_color !=
 	    to_dm_connector_state(old_con_state)->hdr10_deep_color) {
 		new_crtc_state = drm_atomic_get_crtc_state(state, crtc);
@@ -9679,6 +9716,7 @@ void amdgpu_dm_connector_init_helper(struct amdgpu_display_manager *dm,
 	if (connector_type == DRM_MODE_CONNECTOR_HDMIA) {
 		/* Content Type is currently only implemented for HDMI. */
 		drm_connector_attach_content_type_property(&aconnector->base);
+		drm_connector_attach_hdr10plus_metadata_property(&aconnector->base);
 	}
 
 	if (connector_type == DRM_MODE_CONNECTOR_HDMIA) {
@@ -10610,6 +10648,7 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_commit *state,
 		struct dc_scaling_info scaling_infos[MAX_SURFACES];
 		struct dc_flip_addrs flip_addrs[MAX_SURFACES];
 		struct dc_stream_update stream_update;
+		struct dc_info_packet hdr10plus;
 	} *bundle;
 
 	bundle = kzalloc_obj(*bundle);
@@ -10870,6 +10909,20 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_commit *state,
 			flush_workqueue(dm->vblank_control_workqueue);
 
 		bundle->stream_update.stream = acrtc_state->stream;
+		{
+			struct drm_connector *connector __maybe_unused;
+			struct drm_connector_state *conn;
+			int index;
+
+			for_each_new_connector_in_state(state, connector, conn, index) {
+				if (conn->crtc != pcrtc || !conn->hdr10plus_metadata)
+					continue;
+				if (!fill_hdr10plus_info_packet(conn->hdr10plus_metadata, &bundle->hdr10plus) &&
+				    memcmp(&bundle->hdr10plus, &acrtc_state->stream->vsp_infopacket,
+					   sizeof(bundle->hdr10plus)))
+					bundle->stream_update.vsp_infopacket = &bundle->hdr10plus;
+			}
+		}
 		if (new_pcrtc_state->mode_changed) {
 			bundle->stream_update.src = acrtc_state->stream->src;
 			bundle->stream_update.dst = acrtc_state->stream->dst;
@@ -13931,6 +13984,30 @@ static int amdgpu_dm_atomic_check(struct drm_device *dev,
 	ret = amdgpu_dm_hdr10_atomic_check(state);
 	if (ret)
 		goto fail;
+	{
+		struct drm_connector *connector __maybe_unused;
+		struct drm_connector_state *conn;
+		int index;
+
+		for_each_new_connector_in_state(state, connector, conn, index) {
+			struct drm_crtc_state *crtc_state;
+			struct dc_stream_state *stream;
+
+			if (!conn->hdr10plus_metadata)
+				continue;
+			crtc_state = drm_atomic_get_new_crtc_state(state, conn->crtc);
+			stream = crtc_state ? to_dm_crtc_state(crtc_state)->stream : NULL;
+			if (drm_connector_check_hdr10plus(conn) || !stream ||
+			    !crtc_state->active || !hdr10plus_has_frame_update(state, conn->crtc) ||
+			    stream->signal != SIGNAL_TYPE_HDMI_TYPE_A ||
+			    convert_dc_color_depth_into_bpc(stream->timing.display_color_depth) < 10 ||
+			    crtc_state->async_flip ||
+			    (crtc_state->mode.flags & DRM_MODE_FLAG_3D_MASK)) {
+				ret = -EINVAL;
+				goto fail;
+			}
+		}
+	}
 
 	/* Must be success */
 	WARN_ON(ret);

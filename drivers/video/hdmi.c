@@ -22,6 +22,7 @@
  */
 
 #include <drm/display/drm_dp.h>
+#include <drm/drm_hdr10plus.h>
 #include <linux/bitops.h>
 #include <linux/bug.h>
 #include <linux/errno.h>
@@ -814,6 +815,44 @@ hdmi_dolby_vendor_infoframe_unpack(struct hdmi_dolby_vendor_infoframe *frame,
 	return 0;
 }
 
+ssize_t hdmi_hdr10plus_vendor_infoframe_pack(
+	const struct hdmi_hdr10plus_vendor_infoframe *frame, void *buffer, size_t size)
+{
+	u8 packet[DRM_HDR10PLUS_INFOFRAME_SIZE] = {
+		0x81, 1, 27, 0, 0x8b, 0x84, 0x90,
+	};
+
+	if (frame->type != HDMI_INFOFRAME_TYPE_VENDOR || frame->version != 1 ||
+	    frame->length != 27 || frame->oui != HDMI_HDR10PLUS_IEEE_OUI)
+		return -EINVAL;
+	memcpy(packet + 7, frame->data, sizeof(frame->data));
+	hdmi_infoframe_set_checksum(packet, sizeof(packet));
+	if (!drm_hdr10plus_infoframe_valid(packet, sizeof(packet)))
+		return -EINVAL;
+	if (size < sizeof(packet))
+		return -ENOSPC;
+	memcpy(buffer, packet, sizeof(packet));
+	return sizeof(packet);
+}
+EXPORT_SYMBOL(hdmi_hdr10plus_vendor_infoframe_pack);
+
+static int hdmi_hdr10plus_vendor_infoframe_unpack(
+	struct hdmi_hdr10plus_vendor_infoframe *frame, const void *buffer, size_t size)
+{
+	const u8 *packet = buffer;
+	struct hdmi_hdr10plus_vendor_infoframe tmp = {
+		.type = HDMI_INFOFRAME_TYPE_VENDOR, .version = 1,
+		.length = 27, .oui = HDMI_HDR10PLUS_IEEE_OUI,
+	};
+
+	if (size < DRM_HDR10PLUS_INFOFRAME_SIZE ||
+	    !drm_hdr10plus_infoframe_valid(buffer, DRM_HDR10PLUS_INFOFRAME_SIZE))
+		return -EINVAL;
+	memcpy(tmp.data, packet + 7, sizeof(tmp.data));
+	*frame = tmp;
+	return 0;
+}
+
 static int
 hdmi_vendor_any_infoframe_check_only(const union hdmi_vendor_any_infoframe *frame)
 {
@@ -982,6 +1021,12 @@ hdmi_vendor_any_infoframe_check(union hdmi_vendor_any_infoframe *frame)
 
 	if (frame->any.oui == HDMI_DOLBY_IEEE_OUI)
 		return hdmi_dolby_vendor_infoframe_check(&frame->dolby);
+	if (frame->any.oui == HDMI_HDR10PLUS_IEEE_OUI) {
+		u8 packet[DRM_HDR10PLUS_INFOFRAME_SIZE];
+		int bytes = hdmi_hdr10plus_vendor_infoframe_pack(&frame->hdr10plus,
+							      packet, sizeof(packet));
+		return bytes < 0 ? bytes : 0;
+	}
 
 	/* Keep the legacy HDMI vendor path unchanged. */
 	if (frame->any.oui != HDMI_IEEE_OUI)
@@ -1005,6 +1050,8 @@ hdmi_vendor_any_infoframe_pack_only(const union hdmi_vendor_any_infoframe *frame
 
 	if (frame->any.oui == HDMI_DOLBY_IEEE_OUI)
 		return hdmi_dolby_vendor_infoframe_pack(&frame->dolby, buffer, size);
+	if (frame->any.oui == HDMI_HDR10PLUS_IEEE_OUI)
+		return hdmi_hdr10plus_vendor_infoframe_pack(&frame->hdr10plus, buffer, size);
 
 	/* Keep the legacy HDMI vendor path unchanged. */
 	if (frame->any.oui != HDMI_IEEE_OUI)
@@ -1644,6 +1691,10 @@ hdmi_vendor_any_infoframe_log(const char *level,
 	}
 
 	if (frame->any.oui != HDMI_IEEE_OUI) {
+		if (frame->any.oui == HDMI_HDR10PLUS_IEEE_OUI) {
+			hdmi_log("    HDR10+: version %u\n", frame->hdr10plus.data[0] >> 6);
+			return;
+		}
 		hdmi_log("    not a HDMI vendor infoframe\n");
 		return;
 	}
@@ -1895,6 +1946,9 @@ hdmi_vendor_any_infoframe_unpack(union hdmi_vendor_any_infoframe *frame,
 	if (size >= HDMI_INFOFRAME_HEADER_SIZE + 3 &&
 	    ptr[4] == 0x46 && ptr[5] == 0xd0 && ptr[6] == 0)
 		return hdmi_dolby_vendor_infoframe_unpack(&frame->dolby, buffer, size);
+	if (size >= HDMI_INFOFRAME_HEADER_SIZE + 3 &&
+	    ptr[4] == 0x8b && ptr[5] == 0x84 && ptr[6] == 0x90)
+		return hdmi_hdr10plus_vendor_infoframe_unpack(&frame->hdr10plus, buffer, size);
 
 	if (size < HDMI_INFOFRAME_HEADER_SIZE)
 		return -EINVAL;

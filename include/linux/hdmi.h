@@ -59,6 +59,7 @@ enum hdmi_infoframe_type {
 #define HDMI_IEEE_OUI 0x000c03
 #define HDMI_FORUM_IEEE_OUI 0xc45dd8
 #define HDMI_DOLBY_IEEE_OUI 0x00d046
+#define HDMI_HDR10PLUS_IEEE_OUI 0x90848b
 #define HDMI_INFOFRAME_HEADER_SIZE  4
 #define HDMI_AVI_INFOFRAME_SIZE    13
 #define HDMI_SPD_INFOFRAME_SIZE    25
@@ -447,6 +448,18 @@ int hdmi_dolby_vendor_infoframe_check(const struct hdmi_dolby_vendor_infoframe *
 ssize_t hdmi_dolby_vendor_infoframe_pack(const struct hdmi_dolby_vendor_infoframe *frame,
 				       void *buffer, size_t size);
 
+struct hdmi_hdr10plus_vendor_infoframe {
+	enum hdmi_infoframe_type type;
+	unsigned char version;
+	unsigned char length;
+	unsigned int oui;
+	/* HDMI representation after the OUI, not a raw ST 2094-40 payload. */
+	u8 data[24];
+};
+
+ssize_t hdmi_hdr10plus_vendor_infoframe_pack(
+	const struct hdmi_hdr10plus_vendor_infoframe *frame, void *buffer, size_t size);
+
 union hdmi_vendor_any_infoframe {
 	struct {
 		enum hdmi_infoframe_type type;
@@ -456,6 +469,7 @@ union hdmi_vendor_any_infoframe {
 	} any;
 	struct hdmi_vendor_infoframe hdmi;
 	struct hdmi_dolby_vendor_infoframe dolby;
+	struct hdmi_hdr10plus_vendor_infoframe hdr10plus;
 };
 
 /**
