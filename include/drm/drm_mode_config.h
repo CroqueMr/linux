@@ -896,6 +896,8 @@ struct drm_mode_config {
 	 * on HDR content
 	 */
 	struct drm_property *hdr_output_metadata_property;
+	/** @hdr10plus_metadata_property: Frame-synchronous HDR10+ VSIF blob. */
+	struct drm_property *hdr10plus_metadata_property;
 
 	/**
 	 * @content_protection_property: DRM ENUM property for content

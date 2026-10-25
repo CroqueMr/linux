@@ -1876,6 +1876,11 @@ int drm_connector_create_standard_properties(struct drm_device *dev)
 	if (!prop)
 		return -ENOMEM;
 	dev->mode_config.hdr_output_metadata_property = prop;
+	prop = drm_property_create(dev, DRM_MODE_PROP_BLOB,
+				   "HDR10PLUS_METADATA", 0);
+	if (!prop)
+		return -ENOMEM;
+	dev->mode_config.hdr10plus_metadata_property = prop;
 
 	return 0;
 }
@@ -2881,6 +2886,53 @@ void drm_connector_attach_hdr_output_metadata_property(struct drm_connector *con
 	drm_object_attach_property(&connector->base, prop, 0);
 }
 EXPORT_SYMBOL(drm_connector_attach_hdr_output_metadata_property);
+
+/**
+ * drm_connector_attach_hdr10plus_metadata_property - opt in to dynamic metadata
+ * @connector: Native HDMI connector with a frame-synchronous packet backend.
+ *
+ * Payload is a complete 31-byte HDR10+ VSIF. Zero disables the packet. The
+ * backend must latch it with the framebuffer, never as a separate update.
+ */
+void drm_connector_attach_hdr10plus_metadata_property(struct drm_connector *connector)
+{
+	drm_object_attach_property(&connector->base,
+		connector->dev->mode_config.hdr10plus_metadata_property, 0);
+}
+EXPORT_SYMBOL(drm_connector_attach_hdr10plus_metadata_property);
+
+/**
+ * drm_connector_check_hdr10plus - validate the shared output contract
+ * @state: new connector state
+ *
+ * Drivers additionally check actual link depth, packet conflicts and latching.
+ * Return: zero when disabled or admissible, negative errno otherwise.
+ */
+int drm_connector_check_hdr10plus(const struct drm_connector_state *state)
+{
+	const struct drm_display_info *info = &state->connector->display_info;
+	const struct hdr_output_metadata *hdr;
+	const u8 *packet;
+
+	if (!state->hdr10plus_metadata)
+		return 0;
+	if (!state->crtc || state->connector->connector_type != DRM_MODE_CONNECTOR_HDMIA ||
+	    !info->hdr10plus_supported || state->max_bpc < 10 ||
+	    !state->hdr_output_metadata ||
+	    state->hdr_output_metadata->length != sizeof(*hdr))
+		return -EINVAL;
+	packet = state->hdr10plus_metadata->data;
+	if ((packet[7] >> 6) > info->hdr10plus_version)
+		return -EINVAL;
+	hdr = state->hdr_output_metadata->data;
+	if (hdr->metadata_type || hdr->hdmi_metadata_type1.metadata_type ||
+	    hdr->hdmi_metadata_type1.eotf != HDMI_EOTF_SMPTE_ST2084 ||
+	    (state->colorspace != DRM_MODE_COLORIMETRY_BT2020_RGB &&
+	     state->colorspace != DRM_MODE_COLORIMETRY_BT2020_YCC))
+		return -EINVAL;
+	return 0;
+}
+EXPORT_SYMBOL(drm_connector_check_hdr10plus);
 
 /**
  * drm_connector_attach_broadcast_rgb_property - attach "Broadcast RGB" property

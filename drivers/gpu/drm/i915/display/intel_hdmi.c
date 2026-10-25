@@ -771,6 +771,8 @@ intel_hdmi_compute_avi_infoframe(struct intel_encoder *encoder,
 	}
 
 	drm_hdmi_avi_infoframe_content_type(frame, conn_state);
+	if (conn_state->hdr10plus_metadata)
+		frame->video_code = drm_match_cea_mode(adjusted_mode);
 
 	if (to_intel_digital_connector_state(conn_state)->dv_lab_standard) {
 		const struct drm_property_blob *edid = conn_state->connector->edid_blob_ptr;
@@ -847,6 +849,10 @@ intel_hdmi_compute_hdmi_infoframe(struct intel_encoder *encoder,
 
 	crtc_state->infoframes.enable |=
 		intel_hdmi_infoframe_enable(HDMI_INFOFRAME_TYPE_VENDOR);
+	if (conn_state->hdr10plus_metadata)
+		return hdmi_infoframe_unpack(&crtc_state->infoframes.hdmi,
+			conn_state->hdr10plus_metadata->data,
+			conn_state->hdr10plus_metadata->length) == 0;
 
 	if (to_intel_digital_connector_state(conn_state)->dv_lab_standard) {
 		struct hdmi_dolby_vendor_infoframe *dv =
@@ -1271,6 +1277,51 @@ static void vlv_set_infoframes(struct intel_encoder *encoder,
 	intel_write_infoframe(encoder, crtc_state,
 			      HDMI_INFOFRAME_TYPE_VENDOR,
 			      &crtc_state->infoframes.hdmi);
+}
+
+bool intel_hdmi_hdr10plus_present(const struct intel_crtc_state *state)
+{
+	return state->infoframes.hdmi.vendor.any.oui == HDMI_HDR10PLUS_IEEE_OUI;
+}
+
+int intel_hdmi_hdr10plus_check(struct intel_atomic_state *state, struct intel_crtc *crtc)
+{
+	struct intel_crtc_state *pipe = intel_atomic_get_new_crtc_state(state, crtc);
+	struct intel_digital_connector_state *conn;
+	struct intel_connector *connector __maybe_unused;
+	int i;
+
+	for_each_new_intel_connector_in_state(state, connector, conn, i) {
+		if (conn->base.crtc != &crtc->base || !conn->base.hdr10plus_metadata)
+			continue;
+		if (drm_connector_check_hdr10plus(&conn->base) || conn->dv_lab_standard ||
+		    !pipe->has_hdmi_sink || !pipe->has_infoframe || pipe->pipe_bpp < 30 ||
+		    pipe->uapi.async_flip ||
+		    (pipe->hw.adjusted_mode.flags & DRM_MODE_FLAG_3D_MASK))
+			return -EINVAL;
+		/* Per-picture changes do not require recomputing the link or a modeset. */
+		if (hdmi_infoframe_unpack(&pipe->infoframes.hdmi,
+			conn->base.hdr10plus_metadata->data,
+			conn->base.hdr10plus_metadata->length))
+			return -EINVAL;
+		pipe->infoframes.enable |= intel_hdmi_infoframe_enable(HDMI_INFOFRAME_TYPE_VENDOR);
+	}
+	return 0;
+}
+
+void intel_hdmi_hdr10plus_update(struct intel_atomic_state *state, struct intel_crtc *crtc)
+{
+	const struct intel_crtc_state *old = intel_atomic_get_old_crtc_state(state, crtc);
+	const struct intel_crtc_state *pipe = intel_atomic_get_new_crtc_state(state, crtc);
+	struct intel_encoder *encoder;
+
+	if ((!intel_hdmi_hdr10plus_present(old) && !intel_hdmi_hdr10plus_present(pipe)) ||
+	    !memcmp(&old->infoframes.hdmi, &pipe->infoframes.hdmi, sizeof(pipe->infoframes.hdmi)))
+		return;
+	/* Called in the plane commit's vblank-evasion section. */
+	for_each_intel_encoder_mask(state->base.dev, encoder, pipe->uapi.encoder_mask)
+		intel_write_infoframe(encoder, pipe, HDMI_INFOFRAME_TYPE_VENDOR,
+				      &pipe->infoframes.hdmi);
 }
 
 void intel_hdmi_fastset_infoframes(struct intel_encoder *encoder,
@@ -2898,6 +2949,8 @@ intel_hdmi_add_properties(struct intel_hdmi *intel_hdmi, struct drm_connector *_
 
 	if (DISPLAY_VER(display) >= 10)
 		drm_connector_attach_hdr_output_metadata_property(&connector->base);
+	if (DISPLAY_VER(display) >= 10)
+		drm_connector_attach_hdr10plus_metadata_property(&connector->base);
 
 	if (!HAS_GMCH(display))
 		drm_connector_attach_max_bpc_property(&connector->base, 8, 12);

@@ -858,6 +858,10 @@ struct drm_display_info {
 	 * @hdr_sink_metadata: HDR Metadata Information read from sink
 	 */
 	struct hdr_sink_metadata hdr_sink_metadata;
+	/** @hdr10plus_supported: HDR10+ VSVDB present in the current EDID. */
+	bool hdr10plus_supported;
+	/** @hdr10plus_version: Highest advertised HDR10+ application version. */
+	u8 hdr10plus_version;
 
 	/**
 	 * @non_desktop: Non desktop display (HMD).
@@ -1203,6 +1207,8 @@ struct drm_connector_state {
 	 * DRM blob property for HDR output metadata
 	 */
 	struct drm_property_blob *hdr_output_metadata;
+	/** @hdr10plus_metadata: Validated VSIF associated with this atomic frame. */
+	struct drm_property_blob *hdr10plus_metadata;
 
 	/**
 	 * @hdmi: HDMI-related variable and properties. Filled by
@@ -2557,6 +2563,8 @@ void drm_connector_attach_panel_type_property(struct drm_connector *connector);
 int drm_connector_attach_broadcast_rgb_property(struct drm_connector *connector);
 int drm_connector_attach_colorspace_property(struct drm_connector *connector);
 void drm_connector_attach_hdr_output_metadata_property(struct drm_connector *connector);
+void drm_connector_attach_hdr10plus_metadata_property(struct drm_connector *connector);
+int drm_connector_check_hdr10plus(const struct drm_connector_state *state);
 bool drm_connector_atomic_hdr_metadata_equal(struct drm_connector_state *old_state,
 					     struct drm_connector_state *new_state);
 int drm_mode_create_aspect_ratio_property(struct drm_device *dev);
