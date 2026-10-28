@@ -19,12 +19,13 @@
 
 static bool dv_standard = true;
 module_param_named(dv_standard, dv_standard, bool, 0444);
-MODULE_PARM_DESC(dv_standard, "Expose experimental byte-preserving Standard-DV on native DCN HDMI");
+MODULE_PARM_DESC(dv_standard, "Expose experimental byte-preserving Standard-DV on native AMD HDMI");
 
-static bool dv_dcn_supported(enum dce_version version)
+static bool dv_display_supported(enum dce_version version)
 {
 	/* Explicit families, not a >= comparison that enables unknown hardware. */
 	switch (version) {
+	case DCE_VERSION_11_22: /* Vega M only, not Polaris DCE11.2. */
 	case DCN_VERSION_1_0: case DCN_VERSION_1_01:
 	case DCN_VERSION_2_0: case DCN_VERSION_2_01: case DCN_VERSION_2_1:
 	case DCN_VERSION_3_0: case DCN_VERSION_3_01:
@@ -44,7 +45,7 @@ void amdgpu_dm_dv_attach(struct amdgpu_dm_connector *connector)
 	struct amdgpu_device *adev = drm_to_adev(connector->base.dev);
 
 	if (!adev->dm.dc ||
-	    !dv_dcn_supported(adev->dm.dc->ctx->dce_version) ||
+	    !dv_display_supported(adev->dm.dc->ctx->dce_version) ||
 	    connector->base.connector_type != DRM_MODE_CONNECTOR_HDMIA ||
 	    !connector->dc_link ||
 	    connector->dc_link->connector_signal != SIGNAL_TYPE_HDMI_TYPE_A)
@@ -57,6 +58,9 @@ void amdgpu_dm_dv_attach(struct amdgpu_dm_connector *connector)
 			drm_object_attach_property(&connector->base.base,
 					connector->dv_standard_property, 0);
 	}
+	/* This port adds DV only; keep Vega M's native HDR10 interface unchanged. */
+	if (adev->dm.dc->ctx->dce_version == DCE_VERSION_11_22)
+		return;
 	connector->hdr10_deep_color_property = drm_property_create_bool(connector->base.dev,
 				DRM_MODE_PROP_ATOMIC, "DVBRIDGE_HDR10_DEEP_COLOR");
 	if (connector->hdr10_deep_color_property)
@@ -167,7 +171,7 @@ int amdgpu_dm_dv_configure_stream(struct dc_stream_state *stream,
 	struct drm_dvbridge_link link = {
 		.requested = state->dv_standard,
 		.lab_enabled = dv_standard && stream->ctx &&
-			dv_dcn_supported(stream->ctx->dce_version),
+			dv_display_supported(stream->ctx->dce_version),
 		.sink_standard = edid && drm_dvbridge_edid(edid->raw_edid, edid->length),
 		.hdmi = stream->signal == SIGNAL_TYPE_HDMI_TYPE_A &&
 			connector->display_info.is_hdmi && connector->display_info.has_hdmi_infoframe,

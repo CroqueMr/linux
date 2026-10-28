@@ -157,11 +157,14 @@ static void dce_ipp_program_prescale(struct input_pixel_processor *ipp,
 		  GRPH_PRESCALE_SCALE_B, params->scale,
 		  GRPH_PRESCALE_BIAS_B, params->bias);
 
-	if (params->mode != IPP_PRESCALE_MODE_BYPASS) {
+	if (params->mode != IPP_PRESCALE_MODE_BYPASS &&
+	    params->mode != IPP_PRESCALE_MODE_BYPASS_LUT) {
 		REG_UPDATE(PRESCALE_GRPH_CONTROL,
 			   GRPH_PRESCALE_BYPASS, 0);
+	}
 
-		/* If prescale is in use, then legacy lut should be bypassed */
+	/* A transport bypass must also clear a LUT left by ordinary playback. */
+	if (params->mode != IPP_PRESCALE_MODE_BYPASS) {
 		REG_UPDATE(INPUT_GAMMA_CONTROL,
 			   GRPH_INPUT_GAMMA_MODE, 1);
 	}

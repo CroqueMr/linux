@@ -1516,6 +1516,17 @@ void resource_build_test_pattern_params(struct resource_context *res_ctx,
 	}
 }
 
+static enum lb_pixel_depth resource_get_lb_depth(
+		const struct dc_plane_state *plane_state,
+		const struct dc_stream_state *stream)
+{
+	/* RGB8 tunnel bytes must not pass through DCE's 10-bit normalization. */
+	if (stream->dv_standard && plane_state->ctx->dce_version == DCE_VERSION_11_22)
+		return LB_PIXEL_DEPTH_24BPP;
+	return plane_state->ctx->dce_version > DCE_VERSION_MAX ?
+		LB_PIXEL_DEPTH_36BPP : LB_PIXEL_DEPTH_30BPP;
+}
+
 bool resource_build_scaling_params(struct pipe_ctx *pipe_ctx)
 {
 	const struct dc_plane_state *plane_state = pipe_ctx->plane_state;
@@ -1555,10 +1566,8 @@ bool resource_build_scaling_params(struct pipe_ctx *pipe_ctx)
 		struct spl_in *spl_in = &pipe_ctx->plane_res.spl_in;
 		struct spl_out *spl_out = &pipe_ctx->plane_res.spl_out;
 
-		if (plane_state->ctx->dce_version > DCE_VERSION_MAX)
-			pipe_ctx->plane_res.scl_data.lb_params.depth = LB_PIXEL_DEPTH_36BPP;
-		else
-			pipe_ctx->plane_res.scl_data.lb_params.depth = LB_PIXEL_DEPTH_30BPP;
+		pipe_ctx->plane_res.scl_data.lb_params.depth =
+			resource_get_lb_depth(plane_state, pipe_ctx->stream);
 
 		pipe_ctx->plane_res.scl_data.lb_params.alpha_en = plane_state->per_pixel_alpha;
 
@@ -1597,10 +1606,8 @@ bool resource_build_scaling_params(struct pipe_ctx *pipe_ctx)
 	 * neither do DCE-8 at 4k resolution, or DCE-11.2 (broken identify pixel
 	 * passthrough). Therefore only use 36 bpp on DCN where it is actually needed.
 	 */
-	if (plane_state->ctx->dce_version > DCE_VERSION_MAX)
-		pipe_ctx->plane_res.scl_data.lb_params.depth = LB_PIXEL_DEPTH_36BPP;
-	else
-		pipe_ctx->plane_res.scl_data.lb_params.depth = LB_PIXEL_DEPTH_30BPP;
+	pipe_ctx->plane_res.scl_data.lb_params.depth =
+		resource_get_lb_depth(plane_state, pipe_ctx->stream);
 
 	pipe_ctx->plane_res.scl_data.lb_params.alpha_en = plane_state->per_pixel_alpha;
 
