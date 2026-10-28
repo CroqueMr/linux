@@ -7939,10 +7939,17 @@ create_stream_for_sink(struct drm_connector *connector,
 		aconnector->sr_skip_count = AMDGPU_DM_PSR_ENTRY_DELAY;
 
 	}
-	if (dm_state->dv_standard &&
-	    amdgpu_dm_dv_configure_stream(stream, dm_state, drm_mode)) {
-		dc_stream_release(stream);
-		stream = NULL;
+	if (dm_state->dv_standard) {
+		int dv_ret = amdgpu_dm_dv_configure_stream(stream, dm_state, drm_mode);
+
+		if (dv_ret) {
+			drm_err_ratelimited(connector->dev,
+				"DVBridge AMD stream rejected: error=%d mode=%dx%d@%d\n",
+				dv_ret, drm_mode->hdisplay, drm_mode->vdisplay,
+				drm_mode_vrefresh(drm_mode));
+			dc_stream_release(stream);
+			stream = NULL;
+		}
 	}
 	if (stream && dm_state->base.hdr10plus_metadata &&
 	    fill_hdr10plus_info_packet(dm_state->base.hdr10plus_metadata, &stream->vsp_infopacket)) {

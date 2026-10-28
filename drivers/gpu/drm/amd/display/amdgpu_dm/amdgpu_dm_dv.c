@@ -58,9 +58,6 @@ void amdgpu_dm_dv_attach(struct amdgpu_dm_connector *connector)
 			drm_object_attach_property(&connector->base.base,
 					connector->dv_standard_property, 0);
 	}
-	/* This port adds DV only; keep Vega M's native HDR10 interface unchanged. */
-	if (adev->dm.dc->ctx->dce_version == DCE_VERSION_11_22)
-		return;
 	connector->hdr10_deep_color_property = drm_property_create_bool(connector->base.dev,
 				DRM_MODE_PROP_ATOMIC, "DVBRIDGE_HDR10_DEEP_COLOR");
 	if (connector->hdr10_deep_color_property)
@@ -145,7 +142,7 @@ static int dv_copy_packet(struct dc_info_packet *packet, const u8 *wire, size_t 
 
 /* Hades RC1 9a06cf50, d1e00b45: the stream owns this sink reference.
  * A connector EDID blob may be replaced independently during hotplug. Keep
- * our existing V2-only policy and reject lengths outside the owned buffer.
+ * packet selection tied to this stream and reject unowned EDID bytes.
  */
 static const struct dc_edid *dv_stream_edid(const struct dc_stream_state *stream)
 {
@@ -157,6 +154,15 @@ static const struct dc_edid *dv_stream_edid(const struct dc_stream_state *stream
 	return edid->length && edid->length <= sizeof(edid->raw_edid) ? edid : NULL;
 }
 
+static bool dv_sink_supported(const struct dvbridge_sink_caps *caps,
+			      const struct drm_display_mode *mode)
+{
+	return caps->status == DV_EDID_STANDARD &&
+		(caps->version == 1 || caps->version == 2) &&
+		(mode->vdisplay < 2160 || drm_mode_vrefresh(mode) <= 30 ||
+		 caps->supports_2160p60);
+}
+
 int amdgpu_dm_dv_configure_stream(struct dc_stream_state *stream,
 				const struct dm_connector_state *state,
 				const struct drm_display_mode *mode)
@@ -164,7 +170,10 @@ int amdgpu_dm_dv_configure_stream(struct dc_stream_state *stream,
 	struct drm_connector *connector = state->base.connector;
 	struct amdgpu_dm_connector *aconnector = to_amdgpu_dm_connector(connector);
 	const struct dc_edid *edid = dv_stream_edid(stream);
+	const struct dvbridge_sink_caps caps = dvbridge_parse_edid(
+		edid ? edid->raw_edid : NULL, edid ? edid->length : 0);
 	struct hdmi_dolby_vendor_infoframe dv;
+	struct hdmi_vendor_infoframe legacy;
 	struct hdmi_avi_infoframe avi;
 	struct dc_info_packet avi_packet, vsp_packet;
 	u8 wire[HDMI_INFOFRAME_SIZE(DOLBY_VENDOR)];
@@ -194,9 +203,7 @@ int amdgpu_dm_dv_configure_stream(struct dc_stream_state *stream,
 		return 0;
 	if (state->hdr10_deep_color)
 		return -EINVAL;
-	/* Legacy sink signaling is qualified separately; do not widen it here. */
-	if (dvbridge_parse_edid(edid ? edid->raw_edid : NULL,
-				edid ? edid->length : 0).version != 2)
+	if (!dv_sink_supported(&caps, mode))
 		return -EOPNOTSUPP;
 	ret = drm_dvbridge_validate(&link);
 	if (ret)
@@ -214,6 +221,8 @@ int amdgpu_dm_dv_configure_stream(struct dc_stream_state *stream,
 	if (ret)
 		return ret;
 	avi.video_code = drm_match_cea_mode(mode);
+	if (caps.legacy_vsif && avi.video_code >= 93 && avi.video_code <= 95)
+		avi.video_code = 0;
 	avi.colorspace = HDMI_COLORSPACE_RGB;
 	avi.colorimetry = HDMI_COLORIMETRY_NONE;
 	avi.extended_colorimetry = 0;
@@ -224,9 +233,18 @@ int amdgpu_dm_dv_configure_stream(struct dc_stream_state *stream,
 	ret = dv_copy_packet(&avi_packet, wire, ret);
 	if (ret)
 		return ret;
-	hdmi_dolby_vendor_infoframe_init(&dv);
-	dv.signal = true;
-	ret = hdmi_dolby_vendor_infoframe_pack(&dv, wire, sizeof(wire));
+	if (caps.legacy_vsif) {
+		unsigned int vic = drm_match_cea_mode(mode);
+
+		hdmi_vendor_infoframe_init(&legacy);
+		legacy.dolby_vision = true;
+		legacy.vic = vic >= 93 && vic <= 95 ? 96 - vic : 0;
+		ret = hdmi_vendor_infoframe_pack(&legacy, wire, sizeof(wire));
+	} else {
+		hdmi_dolby_vendor_infoframe_init(&dv);
+		dv.signal = true;
+		ret = hdmi_dolby_vendor_infoframe_pack(&dv, wire, sizeof(wire));
+	}
 	if (ret < 0)
 		return ret;
 	ret = dv_copy_packet(&vsp_packet, wire, ret);
@@ -237,7 +255,7 @@ int amdgpu_dm_dv_configure_stream(struct dc_stream_state *stream,
 	stream->avi_infopacket = avi_packet;
 	stream->vsp_infopacket = vsp_packet;
 	stream->dv_standard = true;
-	stream->timing.hdmi_vic = 0;
+	stream->timing.hdmi_vic = caps.legacy_vsif ? legacy.vic : 0;
 	stream->timing.vic = avi.video_code;
 	stream->output_color_space = COLOR_SPACE_SRGB;
 	stream->out_transfer_func.type = TF_TYPE_BYPASS;
@@ -386,12 +404,13 @@ int amdgpu_dm_dv_atomic_check(struct drm_atomic_commit *state)
 			return -EINVAL;
 		for_each_new_connector_in_state(state, connector, con, j) {
 			const struct dc_edid *edid = dv_stream_edid(stream);
+			const struct dvbridge_sink_caps caps = dvbridge_parse_edid(
+				edid ? edid->raw_edid : NULL, edid ? edid->length : 0);
 
 			if (con->crtc != crtc)
 				continue;
 
-			if (!edid || !drm_dvbridge_edid(edid->raw_edid, edid->length) ||
-			    dvbridge_parse_edid(edid->raw_edid, edid->length).version != 2 ||
+			if (!dv_sink_supported(&caps, &cs->mode) ||
 			    connector->connector_type != DRM_MODE_CONNECTOR_HDMIA ||
 			    !to_dm_connector_state(con)->dv_standard ||
 			    to_dm_connector_state(con)->hdr10_deep_color ||
