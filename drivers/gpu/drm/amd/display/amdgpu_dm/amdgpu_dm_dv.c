@@ -70,11 +70,12 @@ int amdgpu_dm_hdr10_validate(const struct dm_connector_state *state)
 	const struct drm_connector_state *con = &state->base;
 	const struct hdr_output_metadata *hdr;
 
-	if (!state->hdr10_deep_color)
+	if (!state->hdr10_deep_color && !con->hdr10plus_metadata)
 		return 0;
 	if (state->dv_standard || !con->crtc ||
 	    con->connector->connector_type != DRM_MODE_CONNECTOR_HDMIA ||
-	    !to_amdgpu_dm_connector(con->connector)->hdr10_deep_color_property ||
+	    (state->hdr10_deep_color &&
+	     !to_amdgpu_dm_connector(con->connector)->hdr10_deep_color_property) ||
 	    con->max_requested_bpc < 10 ||
 	    (con->colorspace != DRM_MODE_COLORIMETRY_BT2020_RGB &&
 	     con->colorspace != DRM_MODE_COLORIMETRY_BT2020_YCC) ||

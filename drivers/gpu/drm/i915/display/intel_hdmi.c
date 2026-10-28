@@ -1287,6 +1287,7 @@ bool intel_hdmi_hdr10plus_present(const struct intel_crtc_state *state)
 int intel_hdmi_hdr10plus_check(struct intel_atomic_state *state, struct intel_crtc *crtc)
 {
 	struct intel_crtc_state *pipe = intel_atomic_get_new_crtc_state(state, crtc);
+	struct drm_plane_state *primary;
 	struct intel_digital_connector_state *conn;
 	struct intel_connector *connector __maybe_unused;
 	int i;
@@ -1294,7 +1295,10 @@ int intel_hdmi_hdr10plus_check(struct intel_atomic_state *state, struct intel_cr
 	for_each_new_intel_connector_in_state(state, connector, conn, i) {
 		if (conn->base.crtc != &crtc->base || !conn->base.hdr10plus_metadata)
 			continue;
-		if (drm_connector_check_hdr10plus(&conn->base) || conn->dv_lab_standard ||
+		primary = drm_atomic_get_new_plane_state(&state->base, crtc->base.primary);
+		if (!(state->hdr10plus_primary_mask & drm_crtc_mask(&crtc->base)) ||
+		    drm_connector_check_hdr10plus(&conn->base) || conn->dv_lab_standard ||
+		    !pipe->uapi.active || !primary || primary->crtc != &crtc->base || !primary->fb ||
 		    !pipe->has_hdmi_sink || !pipe->has_infoframe || pipe->pipe_bpp < 30 ||
 		    pipe->uapi.async_flip ||
 		    (pipe->hw.adjusted_mode.flags & DRM_MODE_FLAG_3D_MASK))
@@ -2401,9 +2405,11 @@ static bool intel_dvbridge_hdr_deep_requested(struct intel_display *display,
 {
 	const struct hdr_output_metadata *hdr;
 
-	/* Native 10-bpc HDMI starts at Display11; Display10 uses 8/12 bpc. */
-	if (DISPLAY_VER(display) < 11 ||
-	    !to_intel_digital_connector_state(state)->dv_hdr10_deep_color ||
+	/* Display10 carries ten-bit content through its native twelve-bit link. */
+	if (DISPLAY_VER(display) < 10 ||
+	    (DISPLAY_VER(display) == 10 && state->max_requested_bpc < 12) ||
+	    (!to_intel_digital_connector_state(state)->dv_hdr10_deep_color &&
+	     !state->hdr10plus_metadata) ||
 	    to_intel_digital_connector_state(state)->dv_lab_standard ||
 	    (state->colorspace != DRM_MODE_COLORIMETRY_BT2020_RGB &&
 	     state->colorspace != DRM_MODE_COLORIMETRY_BT2020_YCC) ||
@@ -2933,7 +2939,7 @@ intel_hdmi_add_properties(struct intel_hdmi *intel_hdmi, struct drm_connector *_
 			drm_object_attach_property(&_connector->base, connector->dv_lab_property, 0);
 	}
 
-	if (DISPLAY_VER(display) >= 11) {
+	if (DISPLAY_VER(display) >= 10) {
 		ratelimit_state_init(&connector->dv_log_limit, 30 * HZ, 1);
 		connector->dv_hdr10_property = drm_property_create_bool(display->drm,
 			DRM_MODE_PROP_ATOMIC, "DVBRIDGE_HDR10_DEEP_COLOR");
