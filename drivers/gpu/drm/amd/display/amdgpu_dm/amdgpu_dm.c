@@ -6995,9 +6995,9 @@ static void amdgpu_dm_hdr10_select_format(struct dc_stream_state *stream,
 	struct dc_crtc_timing *timing = &stream->timing;
 	struct dc_crtc_timing candidate;
 
-	/* Only this private HDR10 request may trade chroma for real precision.
-	 * Keep a supported RGB10+ result and leave Vanilla/DV tunnels untouched. */
-	if (!state->hdr10_deep_color || amdgpu_dm_hdr10_validate(state) ||
+	/* Keep genuine HDR precision when an admitted deep-chroma route fits. */
+	if ((!state->hdr10_deep_color && !con->hdr10plus_metadata) ||
+	    amdgpu_dm_hdr10_validate(state) ||
 	    stream->signal != SIGNAL_TYPE_HDMI_TYPE_A || !stream->link ||
 	    stream->link->connector_signal != SIGNAL_TYPE_HDMI_TYPE_A ||
 	    requested_bpc < 10 ||
@@ -7724,6 +7724,21 @@ static int fill_hdr10plus_info_packet(const struct drm_property_blob *blob,
 	return 0;
 }
 
+static int fill_hdr10plus_stream_packet(const struct drm_property_blob *blob,
+		struct dc_stream_state *stream, const struct drm_display_mode *mode)
+{
+	if (stream->timing.hdmi_vic) {
+		u8 vic = drm_match_cea_mode(mode);
+
+		if (!vic)
+			return -EINVAL;
+		/* HDR10+ owns the vendor packet; carry this timing in native AVI. */
+		stream->timing.vic = vic;
+		stream->timing.hdmi_vic = 0;
+	}
+	return fill_hdr10plus_info_packet(blob, &stream->vsp_infopacket);
+}
+
 static struct dc_stream_state *
 create_stream_for_sink(struct drm_connector *connector,
 		       const struct drm_display_mode *drm_mode,
@@ -7952,7 +7967,7 @@ create_stream_for_sink(struct drm_connector *connector,
 		}
 	}
 	if (stream && dm_state->base.hdr10plus_metadata &&
-	    fill_hdr10plus_info_packet(dm_state->base.hdr10plus_metadata, &stream->vsp_infopacket)) {
+	    fill_hdr10plus_stream_packet(dm_state->base.hdr10plus_metadata, stream, drm_mode)) {
 		dc_stream_release(stream);
 		stream = NULL;
 	}
@@ -8728,7 +8743,7 @@ create_validate_stream_for_sink(struct drm_connector *connector,
 				      dc_status_to_str(dc_result));
 
 			/* Retry native 4:2:0 before accepting an 8-bit bandwidth fallback. */
-			if (dm_state->hdr10_deep_color &&
+			if ((dm_state->hdr10_deep_color || dm_state->base.hdr10plus_metadata) &&
 			    !amdgpu_dm_hdr10_validate(dm_state) && requested_bpc >= 10 &&
 			    dc_result == DC_FAIL_BANDWIDTH_VALIDATE &&
 			    stream->timing.pixel_encoding == PIXEL_ENCODING_YCBCR422 &&
@@ -13497,6 +13512,7 @@ static int amdgpu_dm_atomic_check(struct drm_device *dev,
 	struct drm_dp_mst_topology_mgr *mgr;
 	struct drm_dp_mst_topology_state *mst_state;
 	struct dsc_mst_fairness_vars vars[MAX_PIPES] = {0};
+	u32 hdr10plus_primary_mask = drm_atomic_hdr10plus_frame_mask(state);
 
 	trace_amdgpu_dm_atomic_check_begin(state);
 
@@ -14004,9 +14020,11 @@ static int amdgpu_dm_atomic_check(struct drm_device *dev,
 				continue;
 			crtc_state = drm_atomic_get_new_crtc_state(state, conn->crtc);
 			stream = crtc_state ? to_dm_crtc_state(crtc_state)->stream : NULL;
-			if (drm_connector_check_hdr10plus(conn) || !stream ||
+			if (!conn->crtc || !(hdr10plus_primary_mask & drm_crtc_mask(conn->crtc)) ||
+			    drm_connector_check_hdr10plus(conn) || !stream ||
 			    !crtc_state->active || !hdr10plus_has_frame_update(state, conn->crtc) ||
 			    stream->signal != SIGNAL_TYPE_HDMI_TYPE_A ||
+			    stream->timing.hdmi_vic ||
 			    convert_dc_color_depth_into_bpc(stream->timing.display_color_depth) < 10 ||
 			    crtc_state->async_flip ||
 			    (crtc_state->mode.flags & DRM_MODE_FLAG_3D_MASK)) {

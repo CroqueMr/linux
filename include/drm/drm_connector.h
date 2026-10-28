@@ -2565,6 +2565,7 @@ int drm_connector_attach_colorspace_property(struct drm_connector *connector);
 void drm_connector_attach_hdr_output_metadata_property(struct drm_connector *connector);
 void drm_connector_attach_hdr10plus_metadata_property(struct drm_connector *connector);
 int drm_connector_check_hdr10plus(const struct drm_connector_state *state);
+u32 drm_atomic_hdr10plus_frame_mask(struct drm_atomic_commit *state);
 bool drm_connector_atomic_hdr_metadata_equal(struct drm_connector_state *old_state,
 					     struct drm_connector_state *new_state);
 int drm_mode_create_aspect_ratio_property(struct drm_device *dev);

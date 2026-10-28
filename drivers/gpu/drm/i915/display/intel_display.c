@@ -6492,6 +6492,8 @@ int intel_atomic_check(struct drm_device *dev,
 	if (!intel_display_driver_check_access(display))
 		return -ENODEV;
 
+	state->hdr10plus_primary_mask = drm_atomic_hdr10plus_frame_mask(_state);
+
 	for_each_oldnew_intel_crtc_in_state(state, crtc, old_crtc_state, new_crtc_state) {
 		/*
 		 * crtc's state no longer considered to be inherited
