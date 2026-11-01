@@ -3724,6 +3724,12 @@ bool dc_is_timing_changed(struct dc_stream_state *cur_stream,
 	if (cur_stream->dv_standard != new_stream->dv_standard)
 		return true;
 
+	if (cur_stream->vsp_infopacket.valid != new_stream->vsp_infopacket.valid ||
+	    (cur_stream->vsp_infopacket.valid &&
+	     memcmp(&cur_stream->vsp_infopacket, &new_stream->vsp_infopacket,
+		    sizeof(cur_stream->vsp_infopacket))))
+		return true;
+
 	/* If output color space is changed, need to reprogram info frames */
 	if (cur_stream->output_color_space != new_stream->output_color_space)
 		return true;

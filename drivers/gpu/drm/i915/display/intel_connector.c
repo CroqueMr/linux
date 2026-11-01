@@ -38,6 +38,16 @@
 #include "intel_hdcp.h"
 #include "intel_panel.h"
 
+void intel_attach_hdr10_deep_color_property(struct drm_connector *connector)
+{
+	struct intel_connector *intel_connector = to_intel_connector(connector);
+
+	intel_connector->dv_hdr10_property = drm_property_create_bool(connector->dev,
+		DRM_MODE_PROP_ATOMIC, "DVBRIDGE_HDR10_DEEP_COLOR");
+	if (intel_connector->dv_hdr10_property)
+		drm_object_attach_property(&connector->base, intel_connector->dv_hdr10_property, 0);
+}
+
 static void intel_connector_modeset_retry_work_fn(struct work_struct *work)
 {
 	struct intel_connector *connector = container_of(work, typeof(*connector),

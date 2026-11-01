@@ -29,7 +29,8 @@ static inline bool drm_hdr10plus_infoframe_valid(const void *data, unsigned long
 	if ((p[7] >> 6) > 1 || (p[7] & 1) ||
 	    (p[30] & 0x3f) || !(p[30] & 0x40))
 		return false;
-	if ((p[7] >> 6) == 1 && (p[10] != 0 || p[11] != 255))
+	/* V1 slot 1 is luminance; slot 2 is a percentage or unavailable. */
+	if ((p[7] >> 6) == 1 && p[11] > 100 && p[11] != 255)
 		return false;
 	anchors = p[18] >> 4;
 	if (anchors > 9)

@@ -26,6 +26,8 @@ static bool dv_display_supported(enum dce_version version)
 	/* Explicit families, not a >= comparison that enables unknown hardware. */
 	switch (version) {
 	case DCE_VERSION_11_22: /* Vega M only, not Polaris DCE11.2. */
+	case DCN_VERSION_4_01:
+	case DCN_VERSION_4_2: case DCN_VERSION_4_2B:
 	case DCN_VERSION_1_0: case DCN_VERSION_1_01:
 	case DCN_VERSION_2_0: case DCN_VERSION_2_01: case DCN_VERSION_2_1:
 	case DCN_VERSION_3_0: case DCN_VERSION_3_01:
@@ -44,11 +46,19 @@ void amdgpu_dm_dv_attach(struct amdgpu_dm_connector *connector)
 {
 	struct amdgpu_device *adev = drm_to_adev(connector->base.dev);
 
-	if (!adev->dm.dc ||
-	    !dv_display_supported(adev->dm.dc->ctx->dce_version) ||
-	    connector->base.connector_type != DRM_MODE_CONNECTOR_HDMIA ||
-	    !connector->dc_link ||
-	    connector->dc_link->connector_signal != SIGNAL_TYPE_HDMI_TYPE_A)
+	const bool family = adev->dm.dc &&
+		dv_display_supported(adev->dm.dc->ctx->dce_version);
+	const bool hdmi = connector->base.connector_type == DRM_MODE_CONNECTOR_HDMIA &&
+		connector->dc_link &&
+		connector->dc_link->connector_signal == SIGNAL_TYPE_HDMI_TYPE_A;
+
+	/* Attachment runs once per connector, including rejected families. */
+	drm_info(connector->base.dev,
+		 "DVBridge: AMD capability connector=%u dce=0x%x family_supported=%u native_hdmi=%u dv_parameter=%u\n",
+		 connector->base.base.id,
+		 adev->dm.dc ? adev->dm.dc->ctx->dce_version : 0,
+		 family, hdmi, dv_standard);
+	if (!family || !hdmi)
 		return;
 
 	if (dv_standard) {
@@ -333,6 +343,20 @@ static bool dv_plane_neutral(const struct drm_plane_state *p,
 {
 	const struct dm_plane_state *dm = to_dm_plane_state(p);
 	const struct dc_plane_state *dc = dm->dc_state;
+	const struct dc *display = dc && dc->ctx ? dc->ctx->dc : NULL;
+	const struct dc_cm2_func_luts *mcm;
+
+	if (!display || display->debug.always_scale)
+		return false;
+	if (display->config.use_spl && !display->debug.disable_spl &&
+	    (display->debug.force_sharpness == SHARPNESS_ZERO ||
+	     (display->debug.force_sharpness == SHARPNESS_CUSTOM &&
+	      (display->debug.force_sharpness_level || dc->adaptive_sharpness_en))))
+		return false;
+	mcm = &dc->mcm_luts;
+	/* The VIDMEM union contains a GPU address, not a kernel LUT pointer. */
+	if (mcm->lut3d_data.lut3d_src != DC_CM2_TRANSFER_FUNC_SOURCE_SYSMEM)
+		return false;
 
 	return p->plane->type != DRM_PLANE_TYPE_CURSOR && p->fb &&
 		(p->fb->format->format == DRM_FORMAT_XRGB8888 ||
@@ -350,7 +374,13 @@ static bool dv_plane_neutral(const struct drm_plane_state *p,
 		!dm->degamma_lut && !dm->ctm && !dm->shaper_lut && !dm->lut3d &&
 		!dm->blend_lut && dv_identity_tf(dm->degamma_tf) &&
 		dv_identity_tf(dm->shaper_tf) && dv_identity_tf(dm->blend_tf) &&
-		dm->hdr_mult == AMDGPU_HDR_MULT_DEFAULT && dc &&
+		dm->hdr_mult == AMDGPU_HDR_MULT_DEFAULT &&
+		!dc->mcm_lut1d_enable &&
+		dc->mcm_shaper_3dlut_setting == DC_CM2_SHAPER_3DLUT_SETTING_BYPASS_ALL &&
+		(!mcm->shaper || mcm->shaper->type == TF_TYPE_BYPASS) &&
+		(!mcm->lut1d_func || mcm->lut1d_func->type == TF_TYPE_BYPASS) &&
+		(!mcm->lut3d_data.lut3d_func || !mcm->lut3d_data.lut3d_func->state.bits.initialized) &&
+		!mcm->lut3d_data.mpc_3dlut_enable && !mcm->lut3d_data.rmcm_3dlut_enable &&
 		dc->visible && !dc->horizontal_mirror && dc->rotation == ROTATION_ANGLE_0 &&
 		!dc->per_pixel_alpha && !dc->global_alpha &&
 		dc->gamma_correction.is_identity &&
@@ -379,7 +409,11 @@ int amdgpu_dm_dv_atomic_check(struct drm_atomic_commit *state)
 
 		if (!cs->active || !stream || !stream->dv_standard)
 			continue;
-		if (dm->freesync_config.state == VRR_STATE_ACTIVE_FIXED ||
+		if (!stream->ctx || !stream->ctx->dc ||
+		    stream->ctx->dc->debug.visual_confirm != VISUAL_CONFIRM_DISABLE ||
+		    (stream->func_shaper && stream->func_shaper->type != TF_TYPE_BYPASS) ||
+		    (stream->lut3d_func && stream->lut3d_func->state.bits.initialized) ||
+		    dm->freesync_config.state == VRR_STATE_ACTIVE_FIXED ||
 		    dm->freesync_config.state == VRR_STATE_ACTIVE_VARIABLE ||
 		    cs->ctm || cs->gamma_lut || cs->degamma_lut || cs->vrr_enabled ||
 		    cs->async_flip || !dv_identity_tf(dm->regamma_tf) ||

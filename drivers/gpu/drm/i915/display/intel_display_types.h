@@ -38,6 +38,7 @@
 #include <drm/drm_colorop.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_encoder.h>
+#include <drm/drm_dvbridge_edid.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_panel.h>
 #include <drm/drm_rect.h>
@@ -549,6 +550,8 @@ struct intel_connector {
 
 	/* Cached EDID for detect. */
 	const struct drm_edid *detect_edid;
+	/* Detect/force and atomic readers share connection_mutex. */
+	struct dvbridge_sink_caps dv_sink_caps;
 
 	/* Number of times hotplug detection was tried after an HPD interrupt */
 	int hotplug_retries;
