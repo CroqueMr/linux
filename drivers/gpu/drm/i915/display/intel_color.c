@@ -31,6 +31,7 @@
 #include "intel_display_types.h"
 #include "intel_display_utils.h"
 #include "intel_dsb.h"
+#include "intel_hdmi.h"
 #include "intel_vrr.h"
 #include "skl_universal_plane.h"
 #include "skl_universal_plane_regs.h"
@@ -188,6 +189,36 @@ static const struct intel_csc_matrix ilk_csc_matrix_rgb_to_ycbcr = {
 static void intel_csc_clear(struct intel_csc_matrix *csc)
 {
 	memset(csc, 0, sizeof(*csc));
+}
+
+/* BT.2020 NCL, full RGB to limited Cr/Y/Cb; native ILK coefficient format. */
+static const struct intel_csc_matrix ilk_csc_matrix_rgb_to_ycbcr2020 = {
+	.coeff = {
+		0x1e10, 0x9cf0, 0xb488,
+		0x2e70, 0x0950, 0x3688,
+		0xbfb0, 0x9a20, 0x1e10,
+	},
+	.postoff = { 0x0800, 0x0100, 0x0800 },
+};
+
+static const struct intel_csc_matrix *
+intel_csc_rgb_to_ycbcr(const struct intel_crtc_state *crtc_state)
+{
+	const struct hdmi_avi_infoframe *avi = &crtc_state->infoframes.avi.avi;
+	const struct drm_dp_vsc_sdp *vsc = &crtc_state->infoframes.vsc;
+
+	if ((crtc_state->infoframes.enable & intel_hdmi_infoframe_enable(HDMI_INFOFRAME_TYPE_AVI)) &&
+	    avi->colorspace != HDMI_COLORSPACE_RGB &&
+	    avi->colorimetry == HDMI_COLORIMETRY_EXTENDED &&
+	    avi->extended_colorimetry == HDMI_EXTENDED_COLORIMETRY_BT2020)
+		return &ilk_csc_matrix_rgb_to_ycbcr2020;
+	if ((crtc_state->infoframes.enable & intel_hdmi_infoframe_enable(DP_SDP_VSC)) &&
+	    (vsc->pixelformat == DP_PIXELFORMAT_YUV444 ||
+	     vsc->pixelformat == DP_PIXELFORMAT_YUV422 ||
+	     vsc->pixelformat == DP_PIXELFORMAT_YUV420) &&
+	    vsc->colorimetry == DP_COLORIMETRY_BT2020_YCC)
+		return &ilk_csc_matrix_rgb_to_ycbcr2020;
+	return &ilk_csc_matrix_rgb_to_ycbcr;
 }
 
 static bool lut_is_legacy(const struct drm_property_blob *lut)
@@ -536,7 +567,7 @@ static void ilk_assign_csc(struct intel_crtc_state *crtc_state)
 	} else if (crtc_state->output_format != INTEL_OUTPUT_FORMAT_RGB) {
 		drm_WARN_ON(display->drm, !crtc_state->csc_enable);
 
-		ilk_csc_copy(display, &crtc_state->csc, &ilk_csc_matrix_rgb_to_ycbcr);
+		ilk_csc_copy(display, &crtc_state->csc, intel_csc_rgb_to_ycbcr(crtc_state));
 	} else if (limited_color_range) {
 		drm_WARN_ON(display->drm, !crtc_state->csc_enable);
 
@@ -582,7 +613,7 @@ static void icl_assign_csc(struct intel_crtc_state *crtc_state)
 	if (crtc_state->output_format != INTEL_OUTPUT_FORMAT_RGB) {
 		drm_WARN_ON(display->drm, (crtc_state->csc_mode & ICL_OUTPUT_CSC_ENABLE) == 0);
 
-		ilk_csc_copy(display, &crtc_state->output_csc, &ilk_csc_matrix_rgb_to_ycbcr);
+		ilk_csc_copy(display, &crtc_state->output_csc, intel_csc_rgb_to_ycbcr(crtc_state));
 	} else if (crtc_state->limited_color_range) {
 		drm_WARN_ON(display->drm, (crtc_state->csc_mode & ICL_OUTPUT_CSC_ENABLE) == 0);
 

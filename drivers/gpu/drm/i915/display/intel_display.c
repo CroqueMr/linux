@@ -61,6 +61,7 @@
 #include "intel_cdclk.h"
 #include "intel_clock_gating.h"
 #include "intel_color.h"
+#include "intel_color_regs.h"
 #include "intel_crt.h"
 #include "intel_crtc.h"
 #include "intel_crtc_state_dump.h"
@@ -4312,7 +4313,11 @@ static int intel_dv_lab_scanout_check(struct intel_atomic_state *state,
 	/* Refuse color processing/compositing, do not silently bypass a user's LUT. */
 	/* Reason bits: color, dither, VRR, DSC, scaler, plane mask. */
 	reasons = (!!(s->hw.ctm || s->hw.degamma_lut || s->hw.gamma_lut ||
-		       s->pre_csc_lut || s->post_csc_lut || s->gamma_enable || s->csc_enable)) |
+		       s->pre_csc_lut || s->post_csc_lut ||
+		       (DISPLAY_VER(to_intel_display(crtc)) >= 11 ?
+			(s->csc_mode & (ICL_CSC_ENABLE | ICL_OUTPUT_CSC_ENABLE)) ||
+			(s->gamma_mode & (PRE_CSC_GAMMA_ENABLE | POST_CSC_GAMMA_ENABLE)) :
+			s->gamma_enable || s->csc_enable))) |
 		 (!!s->dither << 1) | (!!s->vrr.enable << 2) |
 		 (!!s->dsc.compression_enable << 3) | (!!s->scaler_state.scaler_users << 4) |
 		 ((s->uapi.plane_mask != drm_plane_mask(primary)) << 5);
@@ -4336,7 +4341,8 @@ static int intel_dv_lab_scanout_check(struct intel_atomic_state *state,
 		return intel_dv_lab_scanout_reject(crtc, "primary-layout", reasons);
 	ip = to_intel_plane_state(p);
 	/* Reason bits: color processing, scaler, forced black, linked plane. */
-	reasons = (!!(ip->hw.ctm || ip->hw.degamma_lut || ip->hw.gamma_lut || ip->hw.lut_3d)) |
+	reasons = (!!(p->color_pipeline || ip->hw.ctm || ip->hw.degamma_lut ||
+		       ip->hw.gamma_lut || ip->hw.lut_3d)) |
 		 ((ip->scaler_id >= 0) << 1) | (!!ip->force_black << 2) | (!!ip->planar_linked_plane << 3);
 	if (reasons)
 		return intel_dv_lab_scanout_reject(crtc, "plane-processing", reasons);
@@ -5888,7 +5894,10 @@ static void intel_crtc_check_fastset(const struct intel_crtc_state *old_crtc_sta
 	struct intel_crtc *crtc = to_intel_crtc(new_crtc_state->uapi.crtc);
 
 	/* Never transition the private vendor mode through the HDR-only fastset. */
-	if (intel_dv_lab_active(old_crtc_state) != intel_dv_lab_active(new_crtc_state)) {
+	if (intel_dv_lab_active(old_crtc_state) != intel_dv_lab_active(new_crtc_state) ||
+	    ((intel_hdmi_uses_gmp_hdr(old_crtc_state) || intel_hdmi_uses_gmp_hdr(new_crtc_state)) &&
+	     memcmp(&old_crtc_state->infoframes.drm, &new_crtc_state->infoframes.drm,
+		    sizeof(new_crtc_state->infoframes.drm)))) {
 		new_crtc_state->uapi.mode_changed = true;
 		new_crtc_state->update_lrr = false;
 		new_crtc_state->update_m_n = false;

@@ -136,10 +136,29 @@ static void dce_ipp_cursor_set_attributes(
 }
 
 
+void dce_ipp_reset_dv(struct input_pixel_processor *ipp)
+{
+	TO_DCE_IPP(ipp)->dv_csc_saved = false;
+}
+
 static void dce_ipp_program_prescale(struct input_pixel_processor *ipp,
 				     struct ipp_prescale_params *params)
 {
 	struct dce_ipp *ipp_dce = TO_DCE_IPP(ipp);
+
+	if (ipp->ctx->dce_version == DCE_VERSION_11_22 && REG(INPUT_CSC_CONTROL)) {
+		if (params->mode == IPP_PRESCALE_MODE_BYPASS_LUT) {
+			if (!ipp_dce->dv_csc_saved) {
+				REG_GET(INPUT_CSC_CONTROL, INPUT_CSC_GRPH_MODE,
+					&ipp_dce->dv_csc_mode);
+				ipp_dce->dv_csc_saved = true;
+			}
+			REG_UPDATE(INPUT_CSC_CONTROL, INPUT_CSC_GRPH_MODE, 0);
+		} else if (ipp_dce->dv_csc_saved) {
+			REG_UPDATE(INPUT_CSC_CONTROL, INPUT_CSC_GRPH_MODE, ipp_dce->dv_csc_mode);
+			ipp_dce->dv_csc_saved = false;
+		}
+	}
 
 	/* set to bypass mode first before change */
 	REG_UPDATE(PRESCALE_GRPH_CONTROL,
@@ -287,6 +306,7 @@ void dce_ipp_construct(
 	ipp_dce->regs = regs;
 	ipp_dce->ipp_shift = ipp_shift;
 	ipp_dce->ipp_mask = ipp_mask;
+	dce_ipp_reset_dv(&ipp_dce->base);
 }
 
 #if defined(CONFIG_DRM_AMD_DC_SI)

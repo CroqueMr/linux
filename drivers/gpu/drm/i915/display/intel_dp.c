@@ -3170,7 +3170,8 @@ static void intel_dp_compute_vsc_colorimetry(const struct intel_crtc_state *crtc
 		vsc->colorimetry = DP_COLORIMETRY_BT2020_CYCC;
 		break;
 	case DRM_MODE_COLORIMETRY_BT2020_RGB:
-		vsc->colorimetry = DP_COLORIMETRY_BT2020_RGB;
+		vsc->colorimetry = crtc_state->output_format == INTEL_OUTPUT_FORMAT_RGB ?
+			DP_COLORIMETRY_BT2020_RGB : DP_COLORIMETRY_BT2020_YCC;
 		break;
 	case DRM_MODE_COLORIMETRY_BT2020_YCC:
 		vsc->colorimetry = DP_COLORIMETRY_BT2020_YCC;
@@ -3645,6 +3646,25 @@ int intel_dp_compute_min_hblank(struct intel_crtc_state *crtc_state,
 	return 0;
 }
 
+static bool intel_dp_hdr10_deep_requested(struct intel_encoder *encoder,
+					const struct drm_connector_state *state)
+{
+	const struct intel_digital_connector_state *conn = to_intel_digital_connector_state(state);
+	struct intel_dp *dp = enc_to_intel_dp(encoder);
+	const struct hdr_output_metadata *hdr;
+
+	if (intel_dp_is_edp(dp) || !intel_dp_has_gamut_metadata_dip(encoder) ||
+	    !dp->colorimetry_support || conn->dv_lab_standard ||
+	    state->max_requested_bpc < 10 ||
+	    (state->colorspace != DRM_MODE_COLORIMETRY_BT2020_RGB &&
+	     state->colorspace != DRM_MODE_COLORIMETRY_BT2020_YCC) ||
+	    !state->hdr_output_metadata || state->hdr_output_metadata->length < sizeof(*hdr))
+		return false;
+	hdr = state->hdr_output_metadata->data;
+	return hdr->metadata_type == 0 && hdr->hdmi_metadata_type1.metadata_type == 0 &&
+		hdr->hdmi_metadata_type1.eotf == HDMI_EOTF_SMPTE_ST2084;
+}
+
 int
 intel_dp_compute_config(struct intel_encoder *encoder,
 			struct intel_crtc_state *pipe_config,
@@ -3681,10 +3701,16 @@ intel_dp_compute_config(struct intel_encoder *encoder,
 	 * that fails assume the user might know something we don't.
 	 */
 	ret = intel_dp_compute_formats(encoder, pipe_config, conn_state, true);
-	if (ret)
+	if (to_intel_digital_connector_state(conn_state)->dv_hdr10_deep_color &&
+	    !intel_dp_hdr10_deep_requested(encoder, conn_state))
+		return -EINVAL;
+	if (ret && !to_intel_digital_connector_state(conn_state)->dv_hdr10_deep_color)
 		ret = intel_dp_compute_formats(encoder, pipe_config, conn_state, false);
 	if (ret)
 		return ret;
+	if (to_intel_digital_connector_state(conn_state)->dv_hdr10_deep_color &&
+	    pipe_config->pipe_bpp < 30)
+		return -EINVAL;
 
 	ret = intel_pfit_compute_config(pipe_config, conn_state);
 	if (ret)
@@ -7180,8 +7206,11 @@ intel_dp_add_properties(struct intel_dp *intel_dp, struct drm_connector *_connec
 		intel_attach_dp_colorspace_property(&connector->base);
 	}
 
-	if (intel_dp_has_gamut_metadata_dip(&dp_to_dig_port(intel_dp)->base))
+	if (intel_dp_has_gamut_metadata_dip(&dp_to_dig_port(intel_dp)->base)) {
 		drm_connector_attach_hdr_output_metadata_property(&connector->base);
+		if (DISPLAY_VER(display) >= 9 && !intel_dp_is_edp(intel_dp))
+			intel_attach_hdr10_deep_color_property(&connector->base);
+	}
 
 	if (HAS_VRR(display))
 		drm_connector_attach_vrr_capable_property(&connector->base);

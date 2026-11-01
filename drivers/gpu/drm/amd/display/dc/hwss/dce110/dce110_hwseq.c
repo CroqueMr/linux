@@ -43,6 +43,7 @@
 #include "mem_input.h"
 #include "opp.h"
 #include "ipp.h"
+#include "dce/dce_ipp.h"
 #include "transform.h"
 #include "stream_encoder.h"
 #include "link_encoder.h"
@@ -3031,6 +3032,8 @@ static void dce110_init_hw(struct dc *dc)
 
 	bp = dc->ctx->dc_bios;
 	for (i = 0; i < dc->res_pool->pipe_count; i++) {
+		if (dc->ctx->dce_version == DCE_VERSION_11_22 && dc->res_pool->ipps[i])
+			dce_ipp_reset_dv(dc->res_pool->ipps[i]);
 		xfm = dc->res_pool->transforms[i];
 		xfm->funcs->transform_reset(xfm);
 
@@ -3190,7 +3193,8 @@ static void dce110_program_front_end_for_pipe(
 				plane_state->rotation);
 
 	/* Moved programming gamma from dc to hwss */
-	if (pipe_ctx->plane_state->update_flags.bits.full_update ||
+	if (dc->ctx->dce_version == DCE_VERSION_11_22 ||
+			pipe_ctx->plane_state->update_flags.bits.full_update ||
 			pipe_ctx->plane_state->update_flags.bits.in_transfer_func_change ||
 			pipe_ctx->plane_state->update_flags.bits.gamma_change)
 		hws->funcs.set_input_transfer_func(dc, pipe_ctx, pipe_ctx->plane_state);

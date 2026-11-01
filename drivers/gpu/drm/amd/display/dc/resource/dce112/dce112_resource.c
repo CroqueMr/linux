@@ -184,7 +184,8 @@ static const struct dce110_aux_registers_mask aux_mask = {
 
 #define ipp_regs(id)\
 [id] = {\
-		IPP_DCE110_REG_LIST_DCE_BASE(id)\
+		IPP_DCE110_REG_LIST_DCE_BASE(id),\
+		SRI(INPUT_CSC_CONTROL, DCP, id)\
 }
 
 static const struct dce_ipp_registers ipp_regs[] = {
@@ -197,11 +198,13 @@ static const struct dce_ipp_registers ipp_regs[] = {
 };
 
 static const struct dce_ipp_shift ipp_shift = {
-		IPP_DCE100_MASK_SH_LIST_DCE_COMMON_BASE(__SHIFT)
+		IPP_DCE100_MASK_SH_LIST_DCE_COMMON_BASE(__SHIFT),
+		IPP_SF(INPUT_CSC_CONTROL, INPUT_CSC_GRPH_MODE, __SHIFT)
 };
 
 static const struct dce_ipp_mask ipp_mask = {
-		IPP_DCE100_MASK_SH_LIST_DCE_COMMON_BASE(_MASK)
+		IPP_DCE100_MASK_SH_LIST_DCE_COMMON_BASE(_MASK),
+		IPP_SF(INPUT_CSC_CONTROL, INPUT_CSC_GRPH_MODE, _MASK)
 };
 
 #define transform_regs(id)\
