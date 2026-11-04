@@ -5752,11 +5752,22 @@ int intel_modeset_commit_pipes(struct intel_display *display,
 	to_intel_atomic_state(state)->internal = true;
 
 	for_each_intel_crtc_in_pipe_mask(display, crtc, pipe_mask) {
+		struct drm_plane_state *primary_state;
 		struct intel_crtc_state *crtc_state =
 			intel_atomic_get_crtc_state(state, crtc);
 
 		if (IS_ERR(crtc_state)) {
 			ret = PTR_ERR(crtc_state);
+			goto out;
+		}
+
+		/*
+		 * Include the current primary frame before atomic_check snapshots the
+		 * HDR10+ frame mask. Adding it during helper expansion is too late.
+		 */
+		primary_state = drm_atomic_get_plane_state(state, crtc->base.primary);
+		if (IS_ERR(primary_state)) {
+			ret = PTR_ERR(primary_state);
 			goto out;
 		}
 
