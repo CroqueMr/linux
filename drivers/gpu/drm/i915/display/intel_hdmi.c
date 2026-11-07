@@ -2889,8 +2889,14 @@ intel_hdmi_detect(struct drm_connector *_connector, bool force)
 
 	wakeref = intel_display_power_get(display, POWER_DOMAIN_GMBUS);
 
+	/* A forced-on link may pulse HPD during a modeset. Re-read its EDID
+	 * before deciding capabilities; absent or incompatible sinks still fail.
+	 */
 	if (DISPLAY_VER(display) >= 11 &&
-	    !intel_digital_port_connected(encoder))
+	    !intel_digital_port_connected(encoder) &&
+	    !(connector->base.status == connector_status_connected &&
+	      (connector->base.force == DRM_FORCE_ON ||
+	       connector->base.force == DRM_FORCE_ON_DIGITAL)))
 		goto out;
 
 	intel_hdmi_unset_edid(&connector->base);
