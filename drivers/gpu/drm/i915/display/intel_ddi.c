@@ -4744,7 +4744,8 @@ static void intel_ddi_cleanup_dp_connector(struct intel_digital_port *dig_port)
 }
 
 static int intel_hdmi_reset_link(struct intel_encoder *encoder,
-				 struct drm_modeset_acquire_ctx *ctx)
+				 struct drm_modeset_acquire_ctx *ctx,
+				 bool *retry)
 {
 	struct intel_display *display = to_intel_display(encoder);
 	struct intel_hdmi *hdmi = enc_to_intel_hdmi(encoder);
@@ -4755,6 +4756,8 @@ static int intel_hdmi_reset_link(struct intel_encoder *encoder,
 	struct intel_crtc *crtc;
 	u8 config;
 	int ret;
+
+	*retry = false;
 
 	if (connector->base.status != connector_status_connected) {
 		drm_dbg_kms(display->drm,
@@ -4816,6 +4819,7 @@ static int intel_hdmi_reset_link(struct intel_encoder *encoder,
 			    "HDMI SCDC reset-link: reason=commit-pending connector=%u expected_scrambling=%d expected_ratio40=%d hw_done=0\n",
 			    connector->base.base.id, crtc_state->hdmi_scrambling,
 			    crtc_state->hdmi_high_tmds_clock_ratio);
+		*retry = true;
 		return 0;
 	}
 
@@ -4897,6 +4901,7 @@ intel_ddi_hotplug(struct intel_encoder *encoder,
 	struct intel_digital_port *dig_port = enc_to_dig_port(encoder);
 	struct intel_dp *intel_dp = &dig_port->dp;
 	bool is_tc = intel_encoder_is_tc(encoder);
+	bool hdmi_retry = false;
 	struct drm_modeset_acquire_ctx ctx;
 	enum intel_hotplug_state state;
 	int ret;
@@ -4909,7 +4914,7 @@ intel_ddi_hotplug(struct intel_encoder *encoder,
 	if (!intel_tc_port_link_reset(dig_port)) {
 		if (connector->base.connector_type == DRM_MODE_CONNECTOR_HDMIA) {
 			intel_modeset_lock_ctx_retry(&ctx, NULL, 0, ret)
-				ret = intel_hdmi_reset_link(encoder, &ctx);
+				ret = intel_hdmi_reset_link(encoder, &ctx, &hdmi_retry);
 			drm_WARN_ON(encoder->base.dev, ret);
 		} else {
 			intel_dp_check_link_state(intel_dp);
@@ -4938,9 +4943,16 @@ intel_ddi_hotplug(struct intel_encoder *encoder,
 	 * becomes functional. Retry the detection for 5 seconds on type-c
 	 * connectors to account for this delay.
 	 */
-	if (state == INTEL_HOTPLUG_UNCHANGED &&
-	    connector->hotplug_retries < (is_tc ? 5 : 1) &&
-	    !dig_port->dp.is_mst)
+	/* A pending HDMI commit needs a later check, independently of the
+	 * immediate connection-change notification. Reuse the native one-second
+	 * retry once; never spin on hw_done or retain its commit/CRTC pointer.
+	 */
+	if (hdmi_retry && state == INTEL_HOTPLUG_CHANGED &&
+	    connector->hotplug_retries < 1 && !dig_port->dp.is_mst)
+		state = INTEL_HOTPLUG_CHANGED_RETRY;
+	else if (state == INTEL_HOTPLUG_UNCHANGED &&
+		 connector->hotplug_retries < (hdmi_retry ? 1 : (is_tc ? 5 : 1)) &&
+		 !dig_port->dp.is_mst)
 		state = INTEL_HOTPLUG_RETRY;
 
 	return state;

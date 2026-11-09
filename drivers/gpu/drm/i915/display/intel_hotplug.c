@@ -472,7 +472,7 @@ static void i915_hotplug_work_func(struct work_struct *work)
 	struct intel_hotplug *hotplug = &display->hotplug;
 	struct drm_connector_list_iter conn_iter;
 	struct intel_connector *connector;
-	u32 changed = 0, retry = 0;
+	u32 changed = 0, retry = 0, deferred = 0;
 	u32 hpd_event_bits;
 	u32 hpd_retry_bits;
 	struct drm_connector *first_changed_connector = NULL;
@@ -529,6 +529,9 @@ static void i915_hotplug_work_func(struct work_struct *work)
 			switch (encoder->hotplug(encoder, connector)) {
 			case INTEL_HOTPLUG_UNCHANGED:
 				break;
+			case INTEL_HOTPLUG_CHANGED_RETRY:
+				deferred |= hpd_bit;
+				fallthrough;
 			case INTEL_HOTPLUG_CHANGED:
 				changed |= hpd_bit;
 				changed_connectors++;
@@ -554,8 +557,10 @@ static void i915_hotplug_work_func(struct work_struct *work)
 	if (first_changed_connector)
 		drm_connector_put(first_changed_connector);
 
-	/* Remove shared HPD pins that have changed */
-	retry &= ~changed;
+	/* Remove obsolete shared-pin retries, but preserve an explicit HDMI
+	 * check deferred until its pending commit can complete.
+	 */
+	retry = (retry & ~changed) | deferred;
 	if (retry) {
 		spin_lock_irq(&display->irq.lock);
 		display->hotplug.retry_bits |= retry;

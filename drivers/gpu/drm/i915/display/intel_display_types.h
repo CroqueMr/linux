@@ -160,6 +160,7 @@ enum intel_hotplug_state {
 	INTEL_HOTPLUG_UNCHANGED,
 	INTEL_HOTPLUG_CHANGED,
 	INTEL_HOTPLUG_RETRY,
+	INTEL_HOTPLUG_CHANGED_RETRY,
 };
 
 struct intel_encoder {
