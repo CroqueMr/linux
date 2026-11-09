@@ -529,6 +529,9 @@ static void i915_hotplug_work_func(struct work_struct *work)
 			switch (encoder->hotplug(encoder, connector)) {
 			case INTEL_HOTPLUG_UNCHANGED:
 				break;
+			case INTEL_HOTPLUG_DEFERRED:
+				deferred |= hpd_bit;
+				break;
 			case INTEL_HOTPLUG_CHANGED_RETRY:
 				deferred |= hpd_bit;
 				fallthrough;

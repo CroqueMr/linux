@@ -4947,9 +4947,10 @@ intel_ddi_hotplug(struct intel_encoder *encoder,
 	 * immediate connection-change notification. Reuse the native one-second
 	 * retry once; never spin on hw_done or retain its commit/CRTC pointer.
 	 */
-	if (hdmi_retry && state == INTEL_HOTPLUG_CHANGED &&
+	if (hdmi_retry &&
 	    connector->hotplug_retries < 1 && !dig_port->dp.is_mst)
-		state = INTEL_HOTPLUG_CHANGED_RETRY;
+		state = state == INTEL_HOTPLUG_CHANGED ?
+			INTEL_HOTPLUG_CHANGED_RETRY : INTEL_HOTPLUG_DEFERRED;
 	else if (state == INTEL_HOTPLUG_UNCHANGED &&
 		 connector->hotplug_retries < (hdmi_retry ? 1 : (is_tc ? 5 : 1)) &&
 		 !dig_port->dp.is_mst)
