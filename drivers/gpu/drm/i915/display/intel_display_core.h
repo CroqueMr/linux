@@ -177,6 +177,11 @@ struct intel_hotplug {
 	} stats[HPD_NUM_PINS];
 	u32 event_bits;
 	u32 retry_bits;
+	/* HDMI checks coalesced by encoder, protected by display->irq.lock. */
+	u32 hdmi_wait_encoders[I915_MAX_PIPES];
+	u32 hdmi_ready_encoders;
+	u32 hdmi_running_encoders;
+	u32 hdmi_cancelled_encoders;
 	struct delayed_work reenable_work;
 
 	u32 long_hpd_pin_mask;
