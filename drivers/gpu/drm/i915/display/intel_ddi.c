@@ -4744,8 +4744,7 @@ static void intel_ddi_cleanup_dp_connector(struct intel_digital_port *dig_port)
 }
 
 static int intel_hdmi_reset_link(struct intel_encoder *encoder,
-				 struct drm_modeset_acquire_ctx *ctx,
-				 bool *retry)
+				 struct drm_modeset_acquire_ctx *ctx)
 {
 	struct intel_display *display = to_intel_display(encoder);
 	struct intel_hdmi *hdmi = enc_to_intel_hdmi(encoder);
@@ -4756,8 +4755,6 @@ static int intel_hdmi_reset_link(struct intel_encoder *encoder,
 	struct intel_crtc *crtc;
 	u8 config;
 	int ret;
-
-	*retry = false;
 
 	if (connector->base.status != connector_status_connected) {
 		intel_hpd_hdmi_cancel(encoder);
@@ -4823,7 +4820,6 @@ static int intel_hdmi_reset_link(struct intel_encoder *encoder,
 			    connector->base.base.id, crtc_state->hdmi_scrambling,
 			    crtc_state->hdmi_high_tmds_clock_ratio,
 			    conn_state->commit && try_wait_for_completion(&conn_state->commit->hw_done));
-		*retry = true;
 		return 0;
 	}
 
@@ -4905,7 +4901,6 @@ intel_ddi_hotplug(struct intel_encoder *encoder,
 	struct intel_digital_port *dig_port = enc_to_dig_port(encoder);
 	struct intel_dp *intel_dp = &dig_port->dp;
 	bool is_tc = intel_encoder_is_tc(encoder);
-	bool hdmi_pending = false;
 	struct drm_modeset_acquire_ctx ctx;
 	enum intel_hotplug_state state;
 	int ret;
@@ -4918,7 +4913,7 @@ intel_ddi_hotplug(struct intel_encoder *encoder,
 	if (!intel_tc_port_link_reset(dig_port)) {
 		if (connector->base.connector_type == DRM_MODE_CONNECTOR_HDMIA) {
 			intel_modeset_lock_ctx_retry(&ctx, NULL, 0, ret)
-				ret = intel_hdmi_reset_link(encoder, &ctx, &hdmi_pending);
+				ret = intel_hdmi_reset_link(encoder, &ctx);
 			drm_WARN_ON(encoder->base.dev, ret);
 		} else {
 			intel_dp_check_link_state(intel_dp);
@@ -4947,7 +4942,7 @@ intel_ddi_hotplug(struct intel_encoder *encoder,
 	 * becomes functional. Retry the detection for 5 seconds on type-c
 	 * connectors to account for this delay.
 	 */
-	if (!hdmi_pending && state == INTEL_HOTPLUG_UNCHANGED &&
+	if (state == INTEL_HOTPLUG_UNCHANGED &&
 	    connector->hotplug_retries < (is_tc ? 5 : 1) &&
 	    !dig_port->dp.is_mst)
 		state = INTEL_HOTPLUG_RETRY;
