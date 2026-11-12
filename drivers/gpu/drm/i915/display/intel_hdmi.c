@@ -2889,14 +2889,19 @@ intel_hdmi_detect(struct drm_connector *_connector, bool force)
 
 	wakeref = intel_display_power_get(display, POWER_DOMAIN_GMBUS);
 
-	/* A forced-on link may pulse HPD during a modeset. Re-read its EDID
-	 * before deciding capabilities; absent or incompatible sinks still fail.
+	/* HPD can pulse while switching modes on a native DV HDMI link.
+	 * Use the existing DDC probe here as for a forced-on port.
 	 */
 	if (DISPLAY_VER(display) >= 11 &&
 	    !intel_digital_port_connected(encoder) &&
 	    !(connector->base.status == connector_status_connected &&
 	      (connector->base.force == DRM_FORCE_ON ||
-	       connector->base.force == DRM_FORCE_ON_DIGITAL)))
+	       connector->base.force == DRM_FORCE_ON_DIGITAL ||
+	       (connector->base.force == DRM_FORCE_UNSPECIFIED &&
+	        connector->dv_lab_property && !intel_encoder_is_tc(encoder) &&
+	        intel_hdmi->dp_dual_mode.type == DRM_DP_DUAL_MODE_NONE &&
+	        connector->base.state && connector->base.state->crtc &&
+	        connector->dv_sink_caps.status == DV_EDID_STANDARD))))
 		goto out;
 
 	intel_hdmi_unset_edid(&connector->base);
