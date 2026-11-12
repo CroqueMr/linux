@@ -23,6 +23,7 @@ struct drm_printer;
  *       debugfs file
  */
 #define INTEL_DISPLAY_PARAMS_FOR_EACH(param) \
+	param(bool, enable_lldv_lab, false, 0) \
 	param(bool, enable_dv_lab, true, 0) \
 	param(char *, dmc_firmware_path, NULL, 0400) \
 	param(char *, vbt_firmware, NULL, 0400) \

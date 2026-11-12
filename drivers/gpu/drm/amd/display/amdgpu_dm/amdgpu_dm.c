@@ -7814,7 +7814,7 @@ create_stream_for_sink(struct drm_connector *connector,
 	if (!amdgpu_dm_stereo_mode_supported(connector, drm_mode))
 		return NULL;
 	/* Dolby Vision and stereoscopic HDMI use different VSIF payloads. */
-	if (dm_state->dv_standard && (drm_mode->flags & DRM_MODE_FLAG_3D_MASK))
+	if (amdgpu_dm_dv_transport(dm_state) && (drm_mode->flags & DRM_MODE_FLAG_3D_MASK))
 		return NULL;
 
 	drm_mode_init(&mode, drm_mode);
@@ -8003,7 +8003,7 @@ create_stream_for_sink(struct drm_connector *connector,
 		aconnector->sr_skip_count = AMDGPU_DM_PSR_ENTRY_DELAY;
 
 	}
-	if (dm_state->dv_standard) {
+	if (amdgpu_dm_dv_transport(dm_state)) {
 		int dv_ret = amdgpu_dm_dv_configure_stream(stream, dm_state, drm_mode);
 
 		if (dv_ret) {
@@ -8205,6 +8205,13 @@ int amdgpu_dm_connector_atomic_set_property(struct drm_connector *connector,
 		return 0;
 	}
 
+	if (property == to_amdgpu_dm_connector(connector)->lldv_format_property) {
+		if (val > 1)
+			return -EINVAL;
+		dm_new_state->lldv_format = val;
+		return 0;
+	}
+
 	if (property == dev->mode_config.scaling_mode_property) {
 		enum amdgpu_rmx_type rmx_type;
 
@@ -8276,6 +8283,11 @@ int amdgpu_dm_connector_atomic_get_property(struct drm_connector *connector,
 
 	if (property == to_amdgpu_dm_connector(connector)->dv_standard_property) {
 		*val = dm_state->dv_standard;
+		return 0;
+	}
+
+	if (property == to_amdgpu_dm_connector(connector)->lldv_format_property) {
+		*val = dm_state->lldv_format;
 		return 0;
 	}
 
@@ -8984,7 +8996,10 @@ amdgpu_dm_connector_atomic_check(struct drm_connector *conn,
 
 	trace_amdgpu_dm_connector_atomic_check(new_con_state);
 	if (drm_connector_check_hdr10plus(new_con_state) ||
-	    (new_con_state->hdr10plus_metadata && to_dm_connector_state(new_con_state)->dv_standard))
+	    (new_con_state->hdr10plus_metadata &&
+	     amdgpu_dm_dv_transport(to_dm_connector_state(new_con_state))) ||
+	    (to_dm_connector_state(new_con_state)->lldv_format &&
+	     to_dm_connector_state(new_con_state)->dv_standard))
 		return -EINVAL;
 
 	if (conn->connector_type == DRM_MODE_CONNECTOR_DisplayPort) {
@@ -8993,11 +9008,15 @@ amdgpu_dm_connector_atomic_check(struct drm_connector *conn,
 			return ret;
 	}
 
-	if (!crtc)
+	if (!crtc) {
+		to_dm_connector_state(new_con_state)->lldv_format = 0;
 		return 0;
+	}
 
 	if (to_dm_connector_state(new_con_state)->dv_standard !=
 	    to_dm_connector_state(old_con_state)->dv_standard ||
+	    to_dm_connector_state(new_con_state)->lldv_format !=
+	    to_dm_connector_state(old_con_state)->lldv_format ||
 	    !!new_con_state->hdr10plus_metadata != !!old_con_state->hdr10plus_metadata ||
 	    to_dm_connector_state(new_con_state)->hdr10_deep_color !=
 	    to_dm_connector_state(old_con_state)->hdr10_deep_color) {
@@ -12339,7 +12358,7 @@ static void get_freesync_config_for_crtc(
 	aconnector = to_amdgpu_dm_connector(new_con_state->base.connector);
 
 	/* No FreeSync capability InfoFrame while bytes carry the DV tunnel. */
-	new_crtc_state->vrr_supported = !new_con_state->dv_standard &&
+	new_crtc_state->vrr_supported = !amdgpu_dm_dv_transport(new_con_state) &&
 					new_con_state->freesync_capable &&
 					vrefresh >= aconnector->min_vfreq &&
 					vrefresh <= aconnector->max_vfreq;
@@ -12522,6 +12541,7 @@ static int dm_update_crtc_state(struct amdgpu_display_manager *dm,
 		if (amdgpu_freesync_vid_mode &&
 		    dm_new_crtc_state->stream &&
 		    dm_new_conn_state->dv_standard == dm_old_conn_state->dv_standard &&
+		    dm_new_conn_state->lldv_format == dm_old_conn_state->lldv_format &&
 		    dm_new_conn_state->hdr10_deep_color == dm_old_conn_state->hdr10_deep_color &&
 		    is_timing_unchanged_for_freesync(new_crtc_state, old_crtc_state))
 			goto skip_modeset;

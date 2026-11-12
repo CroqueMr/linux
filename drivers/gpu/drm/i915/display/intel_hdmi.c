@@ -824,7 +824,16 @@ intel_hdmi_compute_avi_infoframe(struct intel_encoder *encoder,
 		}
 	}
 
-	if (to_intel_digital_connector_state(conn_state)->dv_lab_standard) {
+	if (to_intel_digital_connector_state(conn_state)->lldv_format) {
+		/* 24-bit TMDS carries the two 12-bit components already packed by
+		 * the primary image. The pipe must preserve all carrier bytes. */
+		frame->video_code = drm_match_cea_mode(adjusted_mode);
+		frame->colorspace = HDMI_COLORSPACE_YUV422;
+		frame->colorimetry = HDMI_COLORIMETRY_EXTENDED;
+		frame->extended_colorimetry = HDMI_EXTENDED_COLORIMETRY_BT2020;
+		frame->quantization_range = HDMI_QUANTIZATION_RANGE_DEFAULT;
+		frame->ycc_quantization_range = HDMI_YCC_QUANTIZATION_RANGE_LIMITED;
+	} else if (to_intel_digital_connector_state(conn_state)->dv_lab_standard) {
 		struct dvbridge_sink_caps caps = connector->dv_sink_caps;
 
 		/* RGB is a byte tunnel here, not an RGB color-managed picture. */
@@ -907,6 +916,16 @@ intel_hdmi_compute_hdmi_infoframe(struct intel_encoder *encoder,
 		return hdmi_infoframe_unpack(&crtc_state->infoframes.hdmi,
 			conn_state->hdr10plus_metadata->data,
 			conn_state->hdr10plus_metadata->length) == 0;
+
+	if (to_intel_digital_connector_state(conn_state)->lldv_format) {
+		struct hdmi_dolby_vendor_infoframe *dv =
+			&crtc_state->infoframes.hdmi.vendor.dolby;
+
+		hdmi_dolby_vendor_infoframe_init(dv);
+		dv->signal = true;
+		dv->low_latency = true;
+		return hdmi_dolby_vendor_infoframe_check(dv) == 0;
+	}
 
 	if (to_intel_digital_connector_state(conn_state)->dv_lab_standard) {
 		struct hdmi_dolby_vendor_infoframe *dv =
@@ -2571,6 +2590,14 @@ bool intel_hdmi_compute_has_hdmi_sink(struct intel_encoder *encoder,
 		!intel_hdmi_is_cloned(crtc_state);
 }
 
+static bool intel_lldv_lab_enabled(const struct intel_display *display)
+{
+	return display->params.enable_lldv_lab &&
+		(display->platform.alderlake_p || display->platform.dg2 ||
+		 display->platform.meteorlake || display->platform.lunarlake ||
+		 display->platform.pantherlake);
+}
+
 int intel_hdmi_compute_config(struct intel_encoder *encoder,
 			      struct intel_crtc_state *pipe_config,
 			      struct drm_connector_state *conn_state)
@@ -2578,6 +2605,7 @@ int intel_hdmi_compute_config(struct intel_encoder *encoder,
 	struct intel_display *display = to_intel_display(encoder);
 	struct drm_display_mode *adjusted_mode = &pipe_config->hw.adjusted_mode;
 	struct intel_connector *connector = to_intel_connector(conn_state->connector);
+	u8 lldv = to_intel_digital_connector_state(conn_state)->lldv_format;
 	struct drm_scdc *scdc = &connector->base.display_info.hdmi.scdc;
 	int ret;
 
@@ -2621,7 +2649,7 @@ int intel_hdmi_compute_config(struct intel_encoder *encoder,
 		return -EINVAL;
 	}
 	/* Experimental DV/HDR must never override the sink bandwidth limit. */
-	if (ret && !to_intel_digital_connector_state(conn_state)->dv_lab_standard &&
+	if (ret && !lldv && !to_intel_digital_connector_state(conn_state)->dv_lab_standard &&
 	    !intel_dvbridge_hdr_deep_requested(display, conn_state))
 		ret = intel_hdmi_compute_formats(encoder, pipe_config, conn_state, false);
 	if (ret) {
@@ -2643,13 +2671,14 @@ int intel_hdmi_compute_config(struct intel_encoder *encoder,
 	pipe_config->limited_color_range =
 		intel_hdmi_limited_color_range(pipe_config, conn_state);
 
-	if (to_intel_digital_connector_state(conn_state)->dv_lab_standard) {
+	if (lldv || to_intel_digital_connector_state(conn_state)->dv_lab_standard) {
 		struct dvbridge_sink_caps caps = connector->dv_sink_caps;
 		struct intel_dv_lab_link link = {
 			.requested = true,
-			.lab_enabled = display->params.enable_dv_lab &&
-				intel_dv_lab_platform_supported(DISPLAY_VER(display)),
-			.sink_standard = caps.status == DV_EDID_STANDARD,
+			.lab_enabled = lldv ? intel_lldv_lab_enabled(display) :
+				(display->params.enable_dv_lab &&
+				 intel_dv_lab_platform_supported(DISPLAY_VER(display))),
+			.sink_standard = lldv ? dvbridge_lldv_422(caps) : caps.status == DV_EDID_STANDARD,
 			.hdmi = pipe_config->has_hdmi_sink && pipe_config->has_infoframe &&
 				connector->base.display_info.has_hdmi_infoframe,
 			.native_hdmi = intel_dv_lab_native_hdmi(
@@ -2671,6 +2700,13 @@ int intel_hdmi_compute_config(struct intel_encoder *encoder,
 			.rounded_refresh = drm_mode_vrefresh(adjusted_mode),
 		};
 
+		/* CTA VIC 93–95 share the 297 MHz link. VIC 94 has no fractional mode. */
+		int lldv_vic = lldv ? drm_match_cea_mode(adjusted_mode) : 0;
+		if (lldv && (lldv_vic < 93 || lldv_vic > 95 || caps.legacy_vsif ||
+		    (lldv == 2 && !display->platform.alderlake_p_alderlake_n) ||
+		    (adjusted_mode->clock != 297000 &&
+		     (adjusted_mode->clock != 296703 || lldv_vic == 94))))
+			return -EOPNOTSUPP;
 		ret = intel_dv_lab_validate(&link);
 		if (!ret && link.width == 3840 && link.rounded_refresh > 30 &&
 		    !caps.supports_2160p60)
@@ -2713,7 +2749,8 @@ int intel_hdmi_compute_config(struct intel_encoder *encoder,
 		}
 	}
 
-	intel_vrr_compute_config(pipe_config, conn_state);
+	if (!lldv)
+		intel_vrr_compute_config(pipe_config, conn_state);
 
 	intel_hdmi_compute_gcp_infoframe(encoder, pipe_config,
 					 conn_state);
@@ -3017,6 +3054,20 @@ intel_hdmi_add_properties(struct intel_hdmi *intel_hdmi, struct drm_connector *_
 			DRM_MODE_PROP_ATOMIC, "DVBRIDGE_DV_STANDARD_LAB");
 		if (connector->dv_lab_property)
 			drm_object_attach_property(&_connector->base, connector->dv_lab_property, 0);
+	}
+
+	/* Keep the qualified 12-bit mode on Alder Lake-N. Other HDMI paths
+	 * expose the experimental forced carrier when explicitly enabled. */
+	if (intel_lldv_lab_enabled(display)) {
+		static const struct drm_prop_enum_list formats[] = {
+			{ 0, "Off" }, { 1, "YCbCr 4:2:2 10 bits forced" }, { 2, "YCbCr 4:2:2 12 bits" },
+		};
+
+		connector->lldv_format_property = drm_property_create_enum(display->drm,
+			DRM_MODE_PROP_ATOMIC, "CB1_LLDV_FORMAT", formats,
+			display->platform.alderlake_p_alderlake_n ? ARRAY_SIZE(formats) : 2);
+		if (connector->lldv_format_property)
+			drm_object_attach_property(&_connector->base, connector->lldv_format_property, 0);
 	}
 
 	if (DISPLAY_VER(display) >= 10 || intel_hdmi_has_gmp_hdr(display)) {
