@@ -3721,7 +3721,8 @@ bool dc_is_timing_changed(struct dc_stream_state *cur_stream,
 		return true;
 
 	/* Entry and exit must reprogram HDMI packets and the color pipeline. */
-	if (cur_stream->dv_standard != new_stream->dv_standard)
+	if (cur_stream->dv_standard != new_stream->dv_standard ||
+	    cur_stream->dv_low_latency != new_stream->dv_low_latency)
 		return true;
 
 	if (cur_stream->vsp_infopacket.valid != new_stream->vsp_infopacket.valid ||

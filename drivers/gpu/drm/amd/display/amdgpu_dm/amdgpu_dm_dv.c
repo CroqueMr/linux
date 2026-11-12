@@ -21,6 +21,10 @@ static bool dv_standard = true;
 module_param_named(dv_standard, dv_standard, bool, 0444);
 MODULE_PARM_DESC(dv_standard, "Expose experimental byte-preserving Standard-DV on native AMD HDMI");
 
+static bool dv_lldv;
+module_param_named(dv_lldv, dv_lldv, bool, 0444);
+MODULE_PARM_DESC(dv_lldv, "Expose experimental player-led 4:2:2 on native AMD HDMI");
+
 static bool dv_display_supported(enum dce_version version)
 {
 	/* Explicit families, not a >= comparison that enables unknown hardware. */
@@ -68,6 +72,18 @@ void amdgpu_dm_dv_attach(struct amdgpu_dm_connector *connector)
 			drm_object_attach_property(&connector->base.base,
 					connector->dv_standard_property, 0);
 	}
+	if (dv_lldv) {
+		static const struct drm_prop_enum_list formats[] = {
+			{ 0, "Off" },
+			{ 1, "YCbCr 4:2:2 10 bits forced" },
+		};
+
+		connector->lldv_format_property = drm_property_create_enum(connector->base.dev,
+			DRM_MODE_PROP_ATOMIC, "CB1_LLDV_FORMAT", formats, ARRAY_SIZE(formats));
+		if (connector->lldv_format_property)
+			drm_object_attach_property(&connector->base.base,
+					connector->lldv_format_property, 0);
+	}
 	connector->hdr10_deep_color_property = drm_property_create_bool(connector->base.dev,
 				DRM_MODE_PROP_ATOMIC, "DVBRIDGE_HDR10_DEEP_COLOR");
 	if (connector->hdr10_deep_color_property)
@@ -82,7 +98,7 @@ int amdgpu_dm_hdr10_validate(const struct dm_connector_state *state)
 
 	if (!state->hdr10_deep_color && !con->hdr10plus_metadata)
 		return 0;
-	if (state->dv_standard || !con->crtc ||
+	if (amdgpu_dm_dv_transport(state) || !con->crtc ||
 	    con->connector->connector_type != DRM_MODE_CONNECTOR_HDMIA ||
 	    (state->hdr10_deep_color &&
 	     !to_amdgpu_dm_connector(con->connector)->hdr10_deep_color_property) ||
@@ -174,6 +190,15 @@ static bool dv_sink_supported(const struct dvbridge_sink_caps *caps,
 		 caps->supports_2160p60);
 }
 
+static bool lldv_sink_supported(const struct dvbridge_sink_caps *caps,
+			       const struct drm_display_mode *mode)
+{
+	const unsigned int vic = drm_match_cea_mode(mode);
+
+	return dvbridge_lldv_422(*caps) && !caps->legacy_vsif && vic >= 93 && vic <= 95 &&
+		(mode->clock == 297000 || (mode->clock == 296703 && vic != 94));
+}
+
 int amdgpu_dm_dv_configure_stream(struct dc_stream_state *stream,
 				const struct dm_connector_state *state,
 				const struct drm_display_mode *mode)
@@ -188,11 +213,13 @@ int amdgpu_dm_dv_configure_stream(struct dc_stream_state *stream,
 	struct hdmi_avi_infoframe avi;
 	struct dc_info_packet avi_packet, vsp_packet;
 	u8 wire[HDMI_INFOFRAME_SIZE(DOLBY_VENDOR)];
+	const bool lldv = state->lldv_format != 0;
 	struct drm_dvbridge_link link = {
-		.requested = state->dv_standard,
-		.lab_enabled = dv_standard && stream->ctx &&
+		.requested = amdgpu_dm_dv_transport(state),
+		.lab_enabled = (lldv ? dv_lldv : dv_standard) && stream->ctx &&
 			dv_display_supported(stream->ctx->dce_version),
-		.sink_standard = edid && drm_dvbridge_edid(edid->raw_edid, edid->length),
+		.sink_standard = lldv ? lldv_sink_supported(&caps, mode) :
+			dv_sink_supported(&caps, mode),
 		.hdmi = stream->signal == SIGNAL_TYPE_HDMI_TYPE_A &&
 			connector->display_info.is_hdmi && connector->display_info.has_hdmi_infoframe,
 		.native_hdmi = connector->connector_type == DRM_MODE_CONNECTOR_HDMIA &&
@@ -210,16 +237,16 @@ int amdgpu_dm_dv_configure_stream(struct dc_stream_state *stream,
 	};
 	int ret;
 
-	if (!state->dv_standard)
+	if (!link.requested)
 		return 0;
-	if (state->hdr10_deep_color)
+	if (state->hdr10_deep_color || (lldv && (state->dv_standard ||
+	    state->lldv_format != 1 || state->base.hdr10plus_metadata)))
 		return -EINVAL;
-	if (!dv_sink_supported(&caps, mode))
-		return -EOPNOTSUPP;
 	ret = drm_dvbridge_validate(&link);
 	if (ret)
 		return ret;
-	if (!aconnector->dv_standard_property || state->scaling != RMX_OFF ||
+	if (!(lldv ? aconnector->lldv_format_property : aconnector->dv_standard_property) ||
+	    state->scaling != RMX_OFF ||
 	    state->underscan_enable || aconnector->timing_changed ||
 	    stream->timing.flags.DSC ||
 	    stream->timing.h_addressable != mode->hdisplay ||
@@ -234,10 +261,12 @@ int amdgpu_dm_dv_configure_stream(struct dc_stream_state *stream,
 	avi.video_code = drm_match_cea_mode(mode);
 	if (caps.legacy_vsif && avi.video_code >= 93 && avi.video_code <= 95)
 		avi.video_code = 0;
-	avi.colorspace = HDMI_COLORSPACE_RGB;
-	avi.colorimetry = HDMI_COLORIMETRY_NONE;
-	avi.extended_colorimetry = 0;
-	avi.quantization_range = HDMI_QUANTIZATION_RANGE_FULL;
+	avi.colorspace = lldv ? HDMI_COLORSPACE_YUV422 : HDMI_COLORSPACE_RGB;
+	avi.colorimetry = lldv ? HDMI_COLORIMETRY_EXTENDED : HDMI_COLORIMETRY_NONE;
+	avi.extended_colorimetry = lldv ? HDMI_EXTENDED_COLORIMETRY_BT2020 : 0;
+	avi.quantization_range = lldv ? HDMI_QUANTIZATION_RANGE_DEFAULT : HDMI_QUANTIZATION_RANGE_FULL;
+	if (lldv)
+		avi.ycc_quantization_range = HDMI_YCC_QUANTIZATION_RANGE_LIMITED;
 	ret = hdmi_avi_infoframe_pack(&avi, wire, sizeof(wire));
 	if (ret < 0)
 		return ret;
@@ -254,6 +283,7 @@ int amdgpu_dm_dv_configure_stream(struct dc_stream_state *stream,
 	} else {
 		hdmi_dolby_vendor_infoframe_init(&dv);
 		dv.signal = true;
+		dv.low_latency = lldv;
 		ret = hdmi_dolby_vendor_infoframe_pack(&dv, wire, sizeof(wire));
 	}
 	if (ret < 0)
@@ -266,6 +296,7 @@ int amdgpu_dm_dv_configure_stream(struct dc_stream_state *stream,
 	stream->avi_infopacket = avi_packet;
 	stream->vsp_infopacket = vsp_packet;
 	stream->dv_standard = true;
+	stream->dv_low_latency = lldv;
 	stream->timing.hdmi_vic = caps.legacy_vsif ? legacy.vic : 0;
 	stream->timing.vic = avi.video_code;
 	stream->output_color_space = COLOR_SPACE_SRGB;
@@ -313,7 +344,7 @@ int amdgpu_dm_dv_add_affected(struct drm_atomic_commit *state)
 
 		for_each_new_connector_in_state(state, connector, con_state, j) {
 			if (connector->connector_type == DRM_MODE_CONNECTOR_HDMIA &&
-			    con_state->crtc == crtc && to_dm_connector_state(con_state)->dv_standard)
+			    con_state->crtc == crtc && amdgpu_dm_dv_transport(to_dm_connector_state(con_state)))
 				requested = true;
 			if (connector->connector_type == DRM_MODE_CONNECTOR_HDMIA &&
 			    con_state->crtc == crtc && to_dm_connector_state(con_state)->hdr10_deep_color)
@@ -445,11 +476,16 @@ int amdgpu_dm_dv_atomic_check(struct drm_atomic_commit *state)
 			if (con->crtc != crtc)
 				continue;
 
-			if (!dv_sink_supported(&caps, &cs->mode) ||
-			    connector->connector_type != DRM_MODE_CONNECTOR_HDMIA ||
-			    !to_dm_connector_state(con)->dv_standard ||
+			if (connector->connector_type != DRM_MODE_CONNECTOR_HDMIA ||
+			    (stream->dv_low_latency ?
+			     (!lldv_sink_supported(&caps, &cs->mode) ||
+			      to_dm_connector_state(con)->lldv_format != 1 ||
+			      to_dm_connector_state(con)->dv_standard) :
+			     (!dv_sink_supported(&caps, &cs->mode) ||
+			      !to_dm_connector_state(con)->dv_standard ||
+			      to_dm_connector_state(con)->lldv_format)) ||
 			    to_dm_connector_state(con)->hdr10_deep_color ||
-			    con->hdr_output_metadata || con->colorspace ||
+			    con->hdr10plus_metadata || con->hdr_output_metadata || con->colorspace ||
 			    con->max_requested_bpc != 8 ||
 			    con->hdmi.broadcast_rgb != DRM_HDMI_BROADCAST_RGB_FULL ||
 			    to_dm_connector_state(con)->scaling != RMX_OFF ||
