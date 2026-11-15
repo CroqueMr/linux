@@ -25,6 +25,18 @@ static bool dv_lldv;
 module_param_named(dv_lldv, dv_lldv, bool, 0444);
 MODULE_PARM_DESC(dv_lldv, "Expose experimental player-led 4:2:2 on native AMD HDMI");
 
+static bool dv_rx550(const struct dc_context *ctx)
+{
+	return ctx && ctx->dce_version == DCE_VERSION_11_2 &&
+		ctx->asic_id.chip_id == 0x699f; /* Polaris12 / Lexa */
+}
+
+static bool dv_rx550_mode(const struct drm_display_mode *mode)
+{
+	return mode->hdisplay == 3840 && mode->vdisplay == 2160 &&
+		mode->clock == 296703 && drm_match_cea_mode(mode) == 93;
+}
+
 static bool dv_display_supported(enum dce_version version)
 {
 	/* Explicit families, not a >= comparison that enables unknown hardware. */
@@ -50,8 +62,9 @@ void amdgpu_dm_dv_attach(struct amdgpu_dm_connector *connector)
 {
 	struct amdgpu_device *adev = drm_to_adev(connector->base.dev);
 
-	const bool family = adev->dm.dc &&
-		dv_display_supported(adev->dm.dc->ctx->dce_version);
+	const struct dc_context *ctx = adev->dm.dc ? adev->dm.dc->ctx : NULL;
+	const bool rx550 = dv_rx550(ctx);
+	const bool family = ctx && (rx550 || dv_display_supported(ctx->dce_version));
 	const bool hdmi = connector->base.connector_type == DRM_MODE_CONNECTOR_HDMIA &&
 		connector->dc_link &&
 		connector->dc_link->connector_signal == SIGNAL_TYPE_HDMI_TYPE_A;
@@ -72,7 +85,7 @@ void amdgpu_dm_dv_attach(struct amdgpu_dm_connector *connector)
 			drm_object_attach_property(&connector->base.base,
 					connector->dv_standard_property, 0);
 	}
-	if (dv_lldv) {
+	if (dv_lldv && !rx550) {
 		static const struct drm_prop_enum_list formats[] = {
 			{ 0, "Off" },
 			{ 1, "YCbCr 4:2:2 10 bits forced" },
@@ -214,10 +227,11 @@ int amdgpu_dm_dv_configure_stream(struct dc_stream_state *stream,
 	struct dc_info_packet avi_packet, vsp_packet;
 	u8 wire[HDMI_INFOFRAME_SIZE(DOLBY_VENDOR)];
 	const bool lldv = state->lldv_format != 0;
+	const bool rx550 = dv_rx550(stream->ctx);
 	struct drm_dvbridge_link link = {
 		.requested = amdgpu_dm_dv_transport(state),
 		.lab_enabled = (lldv ? dv_lldv : dv_standard) && stream->ctx &&
-			dv_display_supported(stream->ctx->dce_version),
+			(rx550 ? !lldv : dv_display_supported(stream->ctx->dce_version)),
 		.sink_standard = lldv ? lldv_sink_supported(&caps, mode) :
 			dv_sink_supported(&caps, mode),
 		.hdmi = stream->signal == SIGNAL_TYPE_HDMI_TYPE_A &&
@@ -239,6 +253,8 @@ int amdgpu_dm_dv_configure_stream(struct dc_stream_state *stream,
 
 	if (!link.requested)
 		return 0;
+	if (rx550 && !dv_rx550_mode(mode))
+		return -EOPNOTSUPP;
 	if (state->hdr10_deep_color || (lldv && (state->dv_standard ||
 	    state->lldv_format != 1 || state->base.hdr10plus_metadata)))
 		return -EINVAL;
@@ -302,7 +318,7 @@ int amdgpu_dm_dv_configure_stream(struct dc_stream_state *stream,
 	stream->output_color_space = COLOR_SPACE_SRGB;
 	stream->out_transfer_func.type = TF_TYPE_BYPASS;
 	stream->out_transfer_func.tf = TRANSFER_FUNCTION_LINEAR;
-	stream->dither_option = DITHER_OPTION_DISABLE;
+	stream->dither_option = rx550 ? DITHER_OPTION_TRUN8 : DITHER_OPTION_DISABLE;
 	stream->qs_bit = 1;
 	return 0;
 }
@@ -448,13 +464,15 @@ int amdgpu_dm_dv_atomic_check(struct drm_atomic_commit *state)
 		    dm->freesync_config.state == VRR_STATE_ACTIVE_VARIABLE ||
 		    cs->ctm || cs->gamma_lut || cs->degamma_lut || cs->vrr_enabled ||
 		    cs->async_flip || !dv_identity_tf(dm->regamma_tf) ||
-		    stream->dither_option != DITHER_OPTION_DISABLE ||
+		    stream->dither_option != (dv_rx550(stream->ctx) ?
+			DITHER_OPTION_TRUN8 : DITHER_OPTION_DISABLE) ||
 		    stream->out_transfer_func.type != TF_TYPE_BYPASS ||
 		    stream->gamut_remap_matrix.enable_remap || stream->csc_color_matrix.enable_adjustment ||
 		    stream->output_color_space != COLOR_SPACE_SRGB ||
 		    stream->signal != SIGNAL_TYPE_HDMI_TYPE_A ||
 		    !stream->avi_infopacket.valid || !stream->vsp_infopacket.valid ||
 		    /* Recheck the DC raster after global validation, not only the plane. */
+		    (dv_rx550(stream->ctx) && !dv_rx550_mode(&cs->mode)) ||
 		    stream->timing.flags.INTERLACE ||
 		    stream->timing.timing_3d_format != TIMING_3D_FORMAT_NONE ||
 		    stream->timing.h_border_left || stream->timing.h_border_right ||

@@ -146,7 +146,8 @@ static void dce_ipp_program_prescale(struct input_pixel_processor *ipp,
 {
 	struct dce_ipp *ipp_dce = TO_DCE_IPP(ipp);
 
-	if (ipp->ctx->dce_version == DCE_VERSION_11_22 && REG(INPUT_CSC_CONTROL)) {
+	/* The DCE112 register map is used by Vega M and Polaris. */
+	if (REG(INPUT_CSC_CONTROL)) {
 		if (params->mode == IPP_PRESCALE_MODE_BYPASS_LUT) {
 			if (!ipp_dce->dv_csc_saved) {
 				REG_GET(INPUT_CSC_CONTROL, INPUT_CSC_GRPH_MODE,
