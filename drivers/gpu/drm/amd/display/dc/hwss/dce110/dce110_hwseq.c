@@ -1632,6 +1632,20 @@ static void program_scaler(const struct dc *dc,
 		&pipe_ctx->plane_res.scl_data);
 }
 
+static void dce110_program_stream_expansion(struct output_pixel_processor *opp,
+					   const struct dc_stream_state *stream)
+{
+	/* Undefined depth clears FMT expansion without re-enabling it. Only
+	 * the packed Polaris byte stream needs this override on DCE.
+	 */
+	enum dc_color_depth depth = stream->timing.display_color_depth;
+
+	if (stream->dv_standard && stream->ctx->dce_version == DCE_VERSION_11_2)
+		depth = COLOR_DEPTH_UNDEFINED;
+	opp->funcs->opp_set_dyn_expansion(opp, COLOR_SPACE_YCBCR601, depth,
+					  stream->signal);
+}
+
 static enum dc_status dce110_enable_stream_timing(
 		struct pipe_ctx *pipe_ctx,
 		struct dc_state *context,
@@ -1747,18 +1761,10 @@ enum dc_status dce110_apply_single_controller_ctx_to_hw(
 		&stream->bit_depth_params,
 		&stream->clamping);
 
-	pipe_ctx->stream_res.opp->funcs->opp_set_dyn_expansion(
-			pipe_ctx->stream_res.opp,
-			COLOR_SPACE_YCBCR601,
-			stream->timing.display_color_depth,
-			stream->signal);
+	dce110_program_stream_expansion(pipe_ctx->stream_res.opp, stream);
 
 	while (odm_pipe) {
-		odm_pipe->stream_res.opp->funcs->opp_set_dyn_expansion(
-				odm_pipe->stream_res.opp,
-				COLOR_SPACE_YCBCR601,
-				stream->timing.display_color_depth,
-				stream->signal);
+		dce110_program_stream_expansion(odm_pipe->stream_res.opp, stream);
 
 		odm_pipe->stream_res.opp->funcs->opp_program_fmt(
 				odm_pipe->stream_res.opp,
@@ -2764,7 +2770,9 @@ static void set_default_colors(struct pipe_ctx *pipe_ctx)
 {
 	struct default_adjustment default_adjust = { 0 };
 
-	default_adjust.force_hw_default = false;
+	/* Select the native sRGB bypass instead of its programmable identity. */
+	default_adjust.force_hw_default = pipe_ctx->stream->dv_standard &&
+		pipe_ctx->stream->ctx->dce_version == DCE_VERSION_11_2;
 	default_adjust.in_color_space = pipe_ctx->plane_state->color_space;
 	default_adjust.out_color_space = pipe_ctx->stream->output_color_space;
 	default_adjust.csc_adjust_type = GRAPHICS_CSC_ADJUST_TYPE_SW;
@@ -3032,7 +3040,8 @@ static void dce110_init_hw(struct dc *dc)
 
 	bp = dc->ctx->dc_bios;
 	for (i = 0; i < dc->res_pool->pipe_count; i++) {
-		if (dc->ctx->dce_version == DCE_VERSION_11_22 && dc->res_pool->ipps[i])
+		if ((dc->ctx->dce_version == DCE_VERSION_11_22 ||
+		     dc->ctx->dce_version == DCE_VERSION_11_2) && dc->res_pool->ipps[i])
 			dce_ipp_reset_dv(dc->res_pool->ipps[i]);
 		xfm = dc->res_pool->transforms[i];
 		xfm->funcs->transform_reset(xfm);
@@ -3194,6 +3203,8 @@ static void dce110_program_front_end_for_pipe(
 
 	/* Moved programming gamma from dc to hwss */
 	if (dc->ctx->dce_version == DCE_VERSION_11_22 ||
+			(dc->ctx->dce_version == DCE_VERSION_11_2 &&
+			 dc->ctx->asic_id.chip_id == 0x699f) ||
 			pipe_ctx->plane_state->update_flags.bits.full_update ||
 			pipe_ctx->plane_state->update_flags.bits.in_transfer_func_change ||
 			pipe_ctx->plane_state->update_flags.bits.gamma_change)
