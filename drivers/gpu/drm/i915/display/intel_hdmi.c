@@ -2592,10 +2592,10 @@ bool intel_hdmi_compute_has_hdmi_sink(struct intel_encoder *encoder,
 
 static bool intel_lldv_lab_enabled(const struct intel_display *display)
 {
-	return display->params.enable_lldv_lab &&
-		(display->platform.alderlake_p || display->platform.dg2 ||
-		 display->platform.meteorlake || display->platform.lunarlake ||
-		 display->platform.pantherlake);
+	/* Publish capabilities without activating the connector. */
+	return display->platform.alderlake_p || display->platform.dg2 ||
+		display->platform.meteorlake || display->platform.lunarlake ||
+		display->platform.pantherlake;
 }
 
 int intel_hdmi_compute_config(struct intel_encoder *encoder,

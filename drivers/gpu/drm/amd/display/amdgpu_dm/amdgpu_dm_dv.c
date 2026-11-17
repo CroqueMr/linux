@@ -23,7 +23,7 @@ MODULE_PARM_DESC(dv_standard, "Expose experimental byte-preserving Standard-DV o
 
 static bool dv_lldv;
 module_param_named(dv_lldv, dv_lldv, bool, 0444);
-MODULE_PARM_DESC(dv_lldv, "Expose experimental player-led 4:2:2 on native AMD HDMI");
+MODULE_PARM_DESC(dv_lldv, "Legacy CB1 parameter; LLDV is selected per HDMI connector");
 
 static bool dv_rx550(const struct dc_context *ctx)
 {
@@ -90,7 +90,7 @@ void amdgpu_dm_dv_attach(struct amdgpu_dm_connector *connector)
 			drm_object_attach_property(&connector->base.base,
 					connector->dv_standard_property, 0);
 	}
-	if (dv_lldv && !rx550) {
+	if (!rx550) {
 		static const struct drm_prop_enum_list formats[] = {
 			{ 0, "Off" },
 			{ 1, "YCbCr 4:2:2 10 bits forced" },
@@ -239,7 +239,7 @@ int amdgpu_dm_dv_configure_stream(struct dc_stream_state *stream,
 	const bool rx550 = dv_rx550(stream->ctx);
 	struct drm_dvbridge_link link = {
 		.requested = amdgpu_dm_dv_transport(state),
-		.lab_enabled = (lldv ? dv_lldv : dv_standard) && stream->ctx &&
+		.lab_enabled = (lldv || dv_standard) && stream->ctx &&
 			(rx550 ? !lldv : dv_display_supported(stream->ctx->dce_version)),
 		.sink_standard = lldv ? lldv_sink_supported(&caps, mode) :
 			dv_sink_supported(&caps, mode),
