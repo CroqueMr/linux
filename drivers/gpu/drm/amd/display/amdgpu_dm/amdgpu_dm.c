@@ -14122,7 +14122,7 @@ static int amdgpu_dm_atomic_check(struct drm_device *dev,
 			if (!conn->crtc || !(hdr10plus_primary_mask & drm_crtc_mask(conn->crtc)) ||
 			    drm_connector_check_hdr10plus(conn) || !stream ||
 			    !crtc_state->active || !hdr10plus_has_frame_update(state, conn->crtc) ||
-			    stream->signal != SIGNAL_TYPE_HDMI_TYPE_A ||
+			    !dc_is_hdmi_signal(stream->signal) ||
 			    stream->timing.hdmi_vic ||
 			    convert_dc_color_depth_into_bpc(stream->timing.display_color_depth) < 10 ||
 			    crtc_state->async_flip ||

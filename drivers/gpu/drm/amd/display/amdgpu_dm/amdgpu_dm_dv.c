@@ -166,8 +166,8 @@ int amdgpu_dm_hdr10_atomic_check(struct drm_atomic_commit *state)
 		stream = cs ? to_dm_crtc_state(cs)->stream : NULL;
 		if (!cs || !cs->active || !stream || stream->dv_standard ||
 		    connector->connector_type != DRM_MODE_CONNECTOR_HDMIA ||
-		    stream->signal != SIGNAL_TYPE_HDMI_TYPE_A ||
-		    !stream->link || stream->link->connector_signal != SIGNAL_TYPE_HDMI_TYPE_A ||
+		    !dc_is_hdmi_signal(stream->signal) ||
+		    !stream->link || !dc_is_hdmi_signal(stream->link->connector_signal) ||
 		    hdr10_depth(stream->timing.display_color_depth) < 10)
 			return -EINVAL;
 	}
