@@ -6,12 +6,14 @@
 
 /* Separate from the legacy RGB8 carrier consumed by released players. */
 #define AMDGPU_LLDV_RGB10_LAB 3
+#define AMDGPU_LLDV_444_10 4
 
 static inline bool amdgpu_dm_dv_transport(const struct dm_connector_state *state)
 {
 	return state->dv_standard || state->lldv_format;
 }
 
+u32 amdgpu_dm_lldv_native_formats(struct drm_connector *connector);
 void amdgpu_dm_dv_attach(struct amdgpu_dm_connector *connector);
 int amdgpu_dm_dv_add_affected(struct drm_atomic_commit *state);
 int amdgpu_dm_dv_atomic_check(struct drm_atomic_commit *state);

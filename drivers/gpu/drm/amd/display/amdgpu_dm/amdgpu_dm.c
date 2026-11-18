@@ -8231,8 +8231,11 @@ int amdgpu_dm_connector_atomic_set_property(struct drm_connector *connector,
 		return 0;
 	}
 
+	if (property == to_amdgpu_dm_connector(connector)->lldv_native_formats_property)
+		return -EINVAL;
+
 	if (property == to_amdgpu_dm_connector(connector)->lldv_format_property) {
-		if (val != 0 && val != 1 && val != AMDGPU_LLDV_RGB10_LAB)
+		if (val != 0 && val != 1 && val != AMDGPU_LLDV_RGB10_LAB && val != AMDGPU_LLDV_444_10)
 			return -EINVAL;
 		dm_new_state->lldv_format = val;
 		return 0;
@@ -8309,6 +8312,11 @@ int amdgpu_dm_connector_atomic_get_property(struct drm_connector *connector,
 
 	if (property == to_amdgpu_dm_connector(connector)->dv_standard_property) {
 		*val = dm_state->dv_standard;
+		return 0;
+	}
+
+	if (property == to_amdgpu_dm_connector(connector)->lldv_native_formats_property) {
+		*val = amdgpu_dm_lldv_native_formats(connector);
 		return 0;
 	}
 
