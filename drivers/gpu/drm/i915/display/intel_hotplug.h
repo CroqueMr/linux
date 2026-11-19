@@ -9,6 +9,8 @@
 #include <linux/types.h>
 
 enum port;
+enum pipe;
+struct drm_crtc_commit;
 struct intel_connector;
 struct intel_digital_port;
 struct intel_display;
@@ -25,6 +27,10 @@ void intel_hpd_trigger_irq(struct intel_digital_port *dig_port);
 void intel_hpd_init(struct intel_display *display);
 void intel_hpd_init_early(struct intel_display *display);
 void intel_hpd_cancel_work(struct intel_display *display);
+bool intel_hpd_hdmi_wait_for_commit(struct intel_encoder *encoder, enum pipe pipe,
+				    struct drm_crtc_commit *commit);
+void intel_hpd_hdmi_cancel(struct intel_encoder *encoder);
+void intel_hpd_hdmi_commit_done(struct intel_display *display, u8 pipe_mask);
 enum hpd_pin intel_hpd_pin_default(enum port port);
 void intel_hpd_block(struct intel_encoder *encoder);
 void intel_hpd_unblock(struct intel_encoder *encoder);

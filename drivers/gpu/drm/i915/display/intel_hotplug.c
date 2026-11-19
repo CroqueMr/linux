@@ -21,7 +21,9 @@
  * IN THE SOFTWARE.
  */
 
+#include <linux/completion.h>
 #include <linux/debugfs.h>
+#include <linux/string.h>
 #include <linux/kernel.h>
 
 #include <drm/drm_print.h>
@@ -387,6 +389,84 @@ static u32 get_blocked_hpd_pin_mask(struct intel_display *display)
 	return hpd_pin_mask;
 }
 
+static void hdmi_clear_check(struct intel_display *display, u32 encoder_mask)
+{
+	struct intel_hotplug *hotplug = &display->hotplug;
+	int pipe;
+
+	lockdep_assert_held(&display->irq.lock);
+	for (pipe = 0; pipe < I915_MAX_PIPES; pipe++)
+		hotplug->hdmi_wait_encoders[pipe] &= ~encoder_mask;
+	hotplug->hdmi_ready_encoders &= ~encoder_mask;
+}
+
+static u32 hdmi_ready_encoders(struct intel_display *display)
+{
+	struct intel_encoder *encoder;
+	u32 ready = 0;
+
+	lockdep_assert_held(&display->irq.lock);
+	for_each_intel_encoder(display->drm, encoder) {
+		if (encoder->hpd_pin != HPD_NONE &&
+		    !hpd_pin_is_blocked(display, encoder->hpd_pin))
+			ready |= display->hotplug.hdmi_ready_encoders &
+				drm_encoder_mask(&encoder->base);
+	}
+	return ready;
+}
+
+void intel_hpd_hdmi_cancel(struct intel_encoder *encoder)
+{
+	struct intel_display *display = to_intel_display(encoder);
+
+	spin_lock_irq(&display->irq.lock);
+	hdmi_clear_check(display, drm_encoder_mask(&encoder->base));
+	spin_unlock_irq(&display->irq.lock);
+}
+
+bool intel_hpd_hdmi_wait_for_commit(struct intel_encoder *encoder, enum pipe pipe,
+				    struct drm_crtc_commit *commit)
+{
+	struct intel_display *display = to_intel_display(encoder);
+	struct intel_hotplug *hotplug = &display->hotplug;
+	u32 encoder_mask = drm_encoder_mask(&encoder->base);
+	bool pending = commit && !try_wait_for_completion(&commit->hw_done);
+
+	spin_lock_irq(&display->irq.lock);
+	hdmi_clear_check(display, encoder_mask);
+	if (hotplug->hdmi_cancelled_encoders & encoder_mask) {
+		/* clear-and-unblock cancelled this still-running callback. */
+		pending = true;
+	} else if (pending) {
+		/* Pair registration with the post-hw_done hook: no lost wakeup. */
+		pending = !try_wait_for_completion(&commit->hw_done);
+		if (pending)
+			hotplug->hdmi_wait_encoders[pipe] |= encoder_mask;
+	}
+	spin_unlock_irq(&display->irq.lock);
+
+	return pending;
+}
+
+void intel_hpd_hdmi_commit_done(struct intel_display *display, u8 pipe_mask)
+{
+	struct intel_hotplug *hotplug = &display->hotplug;
+	u32 ready = 0;
+	int pipe;
+
+	spin_lock_irq(&display->irq.lock);
+	for (pipe = 0; pipe < I915_MAX_PIPES; pipe++) {
+		if (!(pipe_mask & BIT(pipe)))
+			continue;
+		ready |= hotplug->hdmi_wait_encoders[pipe];
+		hotplug->hdmi_wait_encoders[pipe] = 0;
+	}
+	hotplug->hdmi_ready_encoders |= ready;
+	if (ready && hdmi_ready_encoders(display))
+		queue_delayed_detection_work(display, &hotplug->hotplug_work, 0);
+	spin_unlock_irq(&display->irq.lock);
+}
+
 static void i915_digport_work_func(struct work_struct *work)
 {
 	struct intel_display *display =
@@ -475,6 +555,8 @@ static void i915_hotplug_work_func(struct work_struct *work)
 	u32 changed = 0, retry = 0;
 	u32 hpd_event_bits;
 	u32 hpd_retry_bits;
+	u32 hdmi_ready, hdmi_running = 0;
+	struct intel_encoder *encoder;
 	struct drm_connector *first_changed_connector = NULL;
 	int changed_connectors = 0;
 	u32 blocked_hpd_pin_mask;
@@ -489,6 +571,17 @@ static void i915_hotplug_work_func(struct work_struct *work)
 	hotplug->event_bits &= ~hpd_event_bits;
 	hpd_retry_bits = hotplug->retry_bits & ~blocked_hpd_pin_mask;
 	hotplug->retry_bits &= ~hpd_retry_bits;
+	hdmi_ready = hotplug->ignore_long_hpd ? 0 : hdmi_ready_encoders(display);
+	hotplug->hdmi_ready_encoders &= ~hdmi_ready;
+	if (!hotplug->ignore_long_hpd) {
+		for_each_intel_encoder(display->drm, encoder) {
+			if (encoder->hpd_pin != HPD_NONE &&
+			    (((hpd_event_bits | hpd_retry_bits) & BIT(encoder->hpd_pin)) ||
+			     (hdmi_ready & drm_encoder_mask(&encoder->base))))
+				hdmi_running |= drm_encoder_mask(&encoder->base);
+		}
+	}
+	hotplug->hdmi_running_encoders |= hdmi_running;
 
 	/* Enable polling for connectors which had HPD IRQ storms */
 	intel_hpd_irq_storm_switch_to_polling(display);
@@ -512,13 +605,15 @@ static void i915_hotplug_work_func(struct work_struct *work)
 			continue;
 
 		hpd_bit = BIT(pin);
-		if ((hpd_event_bits | hpd_retry_bits) & hpd_bit) {
+		if (((hpd_event_bits | hpd_retry_bits) & hpd_bit) ||
+		    (connector->base.connector_type == DRM_MODE_CONNECTOR_HDMIA &&
+		     (hdmi_ready & drm_encoder_mask(&intel_attached_encoder(connector)->base)))) {
 			struct intel_encoder *encoder =
 				intel_attached_encoder(connector);
 
 			if (hpd_event_bits & hpd_bit)
 				connector->hotplug_retries = 0;
-			else
+			else if (hpd_retry_bits & hpd_bit)
 				connector->hotplug_retries++;
 
 			drm_dbg_kms(display->drm,
@@ -538,12 +633,17 @@ static void i915_hotplug_work_func(struct work_struct *work)
 				}
 				break;
 			case INTEL_HOTPLUG_RETRY:
-				retry |= hpd_bit;
+				if ((hpd_event_bits | hpd_retry_bits) & hpd_bit)
+					retry |= hpd_bit;
 				break;
 			}
 		}
 	}
 	drm_connector_list_iter_end(&conn_iter);
+	spin_lock_irq(&display->irq.lock);
+	hotplug->hdmi_running_encoders &= ~hdmi_running;
+	hotplug->hdmi_cancelled_encoders &= ~hdmi_running;
+	spin_unlock_irq(&display->irq.lock);
 	mutex_unlock(&display->drm->mode_config.mutex);
 
 	if (changed_connectors == 1)
@@ -970,23 +1070,26 @@ void intel_hpd_cancel_work(struct intel_display *display)
 	if (!HAS_DISPLAY(display))
 		return;
 
+	/* Stop new queueing before synchronizing callbacks that may arm checks. */
 	spin_lock_irq(&display->irq.lock);
+	display->hotplug.detection_work_enabled = false;
+	spin_unlock_irq(&display->irq.lock);
 
+	cancel_work_sync(&display->hotplug.dig_port_work);
+	if (cancel_all_detection_work(display))
+		drm_dbg_kms(display->drm, "Hotplug detection work still active\n");
+
+	spin_lock_irq(&display->irq.lock);
 	display->hotplug.long_hpd_pin_mask = 0;
 	display->hotplug.short_hpd_pin_mask = 0;
 	display->hotplug.event_bits = 0;
 	display->hotplug.retry_bits = 0;
-
+	memset(display->hotplug.hdmi_wait_encoders, 0,
+	       sizeof(display->hotplug.hdmi_wait_encoders));
+	display->hotplug.hdmi_ready_encoders = 0;
+	display->hotplug.hdmi_running_encoders = 0;
+	display->hotplug.hdmi_cancelled_encoders = 0;
 	spin_unlock_irq(&display->irq.lock);
-
-	cancel_work_sync(&display->hotplug.dig_port_work);
-
-	/*
-	 * All other work triggered by hotplug events should be canceled by
-	 * now.
-	 */
-	if (cancel_all_detection_work(display))
-		drm_dbg_kms(display->drm, "Hotplug detection work still active\n");
 }
 
 static void queue_work_for_missed_irqs(struct intel_display *display)
@@ -999,7 +1102,8 @@ static void queue_work_for_missed_irqs(struct intel_display *display)
 	lockdep_assert_held(&display->irq.lock);
 
 	blocked_hpd_pin_mask = get_blocked_hpd_pin_mask(display);
-	if ((hotplug->event_bits | hotplug->retry_bits) & ~blocked_hpd_pin_mask)
+	if (((hotplug->event_bits | hotplug->retry_bits) & ~blocked_hpd_pin_mask) ||
+	    hdmi_ready_encoders(display))
 		queue_hp_work = true;
 
 	for_each_hpd_pin(pin) {
@@ -1134,6 +1238,9 @@ void intel_hpd_clear_and_unblock(struct intel_encoder *encoder)
 
 	spin_lock_irq(&display->irq.lock);
 
+	hdmi_clear_check(display, drm_encoder_mask(&encoder->base));
+	hotplug->hdmi_cancelled_encoders |= hotplug->hdmi_running_encoders &
+		drm_encoder_mask(&encoder->base);
 	if (unblock_hpd_pin(display, pin)) {
 		hotplug->event_bits &= ~BIT(pin);
 		hotplug->retry_bits &= ~BIT(pin);
@@ -1141,6 +1248,9 @@ void intel_hpd_clear_and_unblock(struct intel_encoder *encoder)
 		hotplug->long_hpd_pin_mask &= ~BIT(pin);
 	}
 
+	/* A sibling sharing this pin may still own a completed check. */
+	if (hdmi_ready_encoders(display))
+		queue_delayed_detection_work(display, &hotplug->hotplug_work, 0);
 	spin_unlock_irq(&display->irq.lock);
 }
 

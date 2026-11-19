@@ -7732,7 +7732,16 @@ static void intel_atomic_commit_tail(struct intel_atomic_state *state)
 	intel_set_cdclk_post_plane_update(state);
 	intel_pmdemand_post_plane_update(state);
 
-	drm_atomic_helper_commit_hw_done(&state->base);
+	/* Capture pipe identities before hw_done publishes the new states. */
+	{
+		u8 hpd_pipes = 0;
+
+		for_each_new_intel_crtc_in_state(state, crtc, new_crtc_state)
+			if (new_crtc_state->uapi.commit)
+				hpd_pipes |= BIT(crtc->pipe);
+		drm_atomic_helper_commit_hw_done(&state->base);
+		intel_hpd_hdmi_commit_done(display, hpd_pipes);
+	}
 	intel_atomic_global_state_commit_done(state);
 
 	if (state->modeset) {
