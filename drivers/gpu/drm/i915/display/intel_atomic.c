@@ -153,6 +153,9 @@ int intel_digital_connector_atomic_check(struct drm_connector *conn,
 	struct drm_crtc_state *crtc_state;
 
 	intel_hdcp_atomic_check(conn, old_state, new_state);
+	if (drm_connector_check_hdr10plus(new_state) ||
+	    (new_state->hdr10plus_metadata && new_conn_state->dv_lab_standard))
+		return -EINVAL;
 
 	if (!new_state->crtc) {
 		new_conn_state->dv_lab_standard = false;
@@ -169,6 +172,7 @@ int intel_digital_connector_atomic_check(struct drm_connector *conn,
 	 * up in a modeset.
 	 */
 	if (new_conn_state->dv_lab_standard != old_conn_state->dv_lab_standard ||
+	    !!new_state->hdr10plus_metadata != !!old_state->hdr10plus_metadata ||
 	    new_conn_state->dv_hdr10_deep_color != old_conn_state->dv_hdr10_deep_color ||
 	    new_conn_state->force_audio != old_conn_state->force_audio ||
 	    new_conn_state->broadcast_rgb != old_conn_state->broadcast_rgb ||

@@ -43,6 +43,7 @@
 
 #include <drm/drm_drv.h>
 #include <drm/drm_edid.h>
+#include <drm/drm_hdr10plus.h>
 #include <drm/drm_eld.h>
 #include <drm/drm_encoder.h>
 #include <drm/drm_print.h>
@@ -6514,6 +6515,12 @@ static void drm_parse_cea_ext(struct drm_connector *connector,
 	cea_db_iter_for_each(db, &iter) {
 		/* FIXME: convert parsers to use struct cea_db */
 		const u8 *data = (const u8 *)db;
+		int hdr10plus = drm_hdr10plus_vsvdb_version(data, 1 + cea_db_payload_len(db));
+
+		if (hdr10plus >= 0) {
+			info->hdr10plus_supported = true;
+			info->hdr10plus_version = hdr10plus;
+		}
 
 		if (cea_db_is_hdmi_vsdb(db))
 			drm_parse_hdmi_vsdb_video(connector, data);
@@ -6697,6 +6704,8 @@ static void drm_reset_display_info(struct drm_connector *connector)
 	info->rgb_quant_range_selectable = false;
 	memset(&info->hdmi, 0, sizeof(info->hdmi));
 	memset(&info->hdr_sink_metadata, 0, sizeof(info->hdr_sink_metadata));
+	info->hdr10plus_supported = false;
+	info->hdr10plus_version = 0;
 
 	info->edid_hdmi_rgb444_dc_modes = 0;
 	info->edid_hdmi_ycbcr444_dc_modes = 0;
