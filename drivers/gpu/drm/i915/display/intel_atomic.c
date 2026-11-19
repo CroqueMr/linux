@@ -69,6 +69,10 @@ int intel_digital_connector_atomic_get_property(struct drm_connector *connector,
 		*val = intel_conn_state->dv_lab_standard;
 		return 0;
 	}
+	if (property == to_intel_connector(connector)->lldv_format_property) {
+		*val = intel_conn_state->lldv_format;
+		return 0;
+	}
 	if (to_intel_connector(connector)->dv_hdr10_property &&
 	    property == to_intel_connector(connector)->dv_hdr10_property) {
 		*val = intel_conn_state->dv_hdr10_deep_color;
@@ -116,6 +120,12 @@ int intel_digital_connector_atomic_set_property(struct drm_connector *connector,
 		intel_conn_state->dv_lab_standard = val;
 		return 0;
 	}
+	if (property == to_intel_connector(connector)->lldv_format_property) {
+		if (val > 2)
+			return -EINVAL;
+		intel_conn_state->lldv_format = val;
+		return 0;
+	}
 	if (to_intel_connector(connector)->dv_hdr10_property &&
 	    property == to_intel_connector(connector)->dv_hdr10_property) {
 		if (val > 1 || (connector->connector_type != DRM_MODE_CONNECTOR_HDMIA &&
@@ -154,12 +164,17 @@ int intel_digital_connector_atomic_check(struct drm_connector *conn,
 	struct drm_crtc_state *crtc_state;
 
 	intel_hdcp_atomic_check(conn, old_state, new_state);
+	if (new_state->crtc && new_conn_state->lldv_format &&
+	    (new_conn_state->dv_lab_standard || new_conn_state->dv_hdr10_deep_color ||
+	     new_state->hdr_output_metadata || new_state->hdr10plus_metadata))
+		return -EINVAL;
 	if (drm_connector_check_hdr10plus(new_state) ||
 	    (new_state->hdr10plus_metadata && new_conn_state->dv_lab_standard))
 		return -EINVAL;
 
 	if (!new_state->crtc) {
 		new_conn_state->dv_lab_standard = false;
+		new_conn_state->lldv_format = 0;
 		new_conn_state->dv_hdr10_deep_color = false;
 		return 0;
 	}
@@ -173,6 +188,7 @@ int intel_digital_connector_atomic_check(struct drm_connector *conn,
 	 * up in a modeset.
 	 */
 	if (new_conn_state->dv_lab_standard != old_conn_state->dv_lab_standard ||
+	    new_conn_state->lldv_format != old_conn_state->lldv_format ||
 	    !!new_state->hdr10plus_metadata != !!old_state->hdr10plus_metadata ||
 	    new_conn_state->dv_hdr10_deep_color != old_conn_state->dv_hdr10_deep_color ||
 	    new_conn_state->force_audio != old_conn_state->force_audio ||

@@ -4,6 +4,11 @@
 
 #include "amdgpu_dm.h"
 
+static inline bool amdgpu_dm_dv_transport(const struct dm_connector_state *state)
+{
+	return state->dv_standard || state->lldv_format;
+}
+
 void amdgpu_dm_dv_attach(struct amdgpu_dm_connector *connector);
 int amdgpu_dm_dv_add_affected(struct drm_atomic_commit *state);
 int amdgpu_dm_dv_atomic_check(struct drm_atomic_commit *state);
