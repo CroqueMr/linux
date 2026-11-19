@@ -298,6 +298,8 @@ dce110_set_input_transfer_func(struct dc *dc, struct pipe_ctx *pipe_ctx,
 	tf = &plane_state->in_transfer_func;
 
 	dce110_prescale_params(&prescale_params, plane_state);
+	if (pipe_ctx->stream->dv_standard)
+		prescale_params.mode = IPP_PRESCALE_MODE_BYPASS_LUT;
 	ipp->funcs->ipp_program_prescale(ipp, &prescale_params);
 
 	if (!plane_state->gamma_correction.is_identity &&

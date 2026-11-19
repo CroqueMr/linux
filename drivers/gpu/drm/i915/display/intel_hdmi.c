@@ -2401,7 +2401,8 @@ static bool intel_dvbridge_hdr_deep_requested(struct intel_display *display,
 {
 	const struct hdr_output_metadata *hdr;
 
-	if (DISPLAY_VER(display) < 12 ||
+	/* Native 10-bpc HDMI starts at Display11; Display10 uses 8/12 bpc. */
+	if (DISPLAY_VER(display) < 11 ||
 	    !to_intel_digital_connector_state(state)->dv_hdr10_deep_color ||
 	    to_intel_digital_connector_state(state)->dv_lab_standard ||
 	    (state->colorspace != DRM_MODE_COLORIMETRY_BT2020_RGB &&
@@ -2932,7 +2933,7 @@ intel_hdmi_add_properties(struct intel_hdmi *intel_hdmi, struct drm_connector *_
 			drm_object_attach_property(&_connector->base, connector->dv_lab_property, 0);
 	}
 
-	if (DISPLAY_VER(display) >= 12) {
+	if (DISPLAY_VER(display) >= 11) {
 		ratelimit_state_init(&connector->dv_log_limit, 30 * HZ, 1);
 		connector->dv_hdr10_property = drm_property_create_bool(display->drm,
 			DRM_MODE_PROP_ATOMIC, "DVBRIDGE_HDR10_DEEP_COLOR");
