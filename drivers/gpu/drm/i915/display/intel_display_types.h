@@ -522,6 +522,7 @@ struct intel_connector {
 	struct drm_connector base;
 	/* Private experimental property; absent unless explicitly enabled at boot. */
 	struct drm_property *dv_lab_property;
+	struct drm_property *dv_hdr10_property;
 	/* Diagnostics only: no influence on DV admission or recovery. */
 	struct ratelimit_state dv_log_limit;
 	/*
@@ -620,6 +621,7 @@ struct intel_digital_connector_state {
 	struct drm_connector_state base;
 	/* Scalar copy/reset lifecycle, no property-blob reference to leak. */
 	bool dv_lab_standard;
+	bool dv_hdr10_deep_color;
 
 	enum hdmi_force_audio force_audio;
 	int broadcast_rgb;

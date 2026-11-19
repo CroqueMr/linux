@@ -69,6 +69,11 @@ int intel_digital_connector_atomic_get_property(struct drm_connector *connector,
 		*val = intel_conn_state->dv_lab_standard;
 		return 0;
 	}
+	if (to_intel_connector(connector)->dv_hdr10_property &&
+	    property == to_intel_connector(connector)->dv_hdr10_property) {
+		*val = intel_conn_state->dv_hdr10_deep_color;
+		return 0;
+	}
 
 	if (property == display->properties.force_audio)
 		*val = intel_conn_state->force_audio;
@@ -111,6 +116,15 @@ int intel_digital_connector_atomic_set_property(struct drm_connector *connector,
 		intel_conn_state->dv_lab_standard = val;
 		return 0;
 	}
+	if (to_intel_connector(connector)->dv_hdr10_property &&
+	    property == to_intel_connector(connector)->dv_hdr10_property) {
+		if (val > 1 || connector->connector_type != DRM_MODE_CONNECTOR_HDMIA)
+			return -EINVAL;
+		if (val && !display->params.enable_dv_lab)
+			return -EOPNOTSUPP;
+		intel_conn_state->dv_hdr10_deep_color = val;
+		return 0;
+	}
 
 	if (property == display->properties.force_audio) {
 		intel_conn_state->force_audio = val;
@@ -144,8 +158,11 @@ int intel_digital_connector_atomic_check(struct drm_connector *conn,
 
 	if (!new_state->crtc) {
 		new_conn_state->dv_lab_standard = false;
+		new_conn_state->dv_hdr10_deep_color = false;
 		return 0;
 	}
+	if (new_conn_state->dv_lab_standard && new_conn_state->dv_hdr10_deep_color)
+		return -EINVAL;
 
 	crtc_state = drm_atomic_get_new_crtc_state(state, new_state->crtc);
 
@@ -154,6 +171,7 @@ int intel_digital_connector_atomic_check(struct drm_connector *conn,
 	 * up in a modeset.
 	 */
 	if (new_conn_state->dv_lab_standard != old_conn_state->dv_lab_standard ||
+	    new_conn_state->dv_hdr10_deep_color != old_conn_state->dv_hdr10_deep_color ||
 	    new_conn_state->force_audio != old_conn_state->force_audio ||
 	    new_conn_state->broadcast_rgb != old_conn_state->broadcast_rgb ||
 	    new_conn_state->base.colorspace != old_conn_state->base.colorspace ||
