@@ -644,6 +644,7 @@ struct dpll {
 
 struct intel_atomic_state {
 	struct drm_atomic_commit base;
+	u32 hdr10plus_primary_mask;
 
 	struct ref_tracker *wakeref;
 

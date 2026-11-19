@@ -21,6 +21,8 @@
  */
 
 #include <drm/drm_auth.h>
+#include <drm/drm_atomic.h>
+#include <drm/drm_plane.h>
 #include <drm/drm_connector.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_edid.h>
@@ -2889,10 +2891,11 @@ EXPORT_SYMBOL(drm_connector_attach_hdr_output_metadata_property);
 
 /**
  * drm_connector_attach_hdr10plus_metadata_property - opt in to dynamic metadata
- * @connector: Native HDMI connector with a frame-synchronous packet backend.
+ * @connector: Native HDMI connector with a frame-owned packet backend.
  *
  * Payload is a complete 31-byte HDR10+ VSIF. Zero disables the packet. The
- * backend must latch it with the framebuffer, never as a separate update.
+ * backend submits it with the framebuffer in the native transaction and
+ * documents its latch/commit synchronization tier. No independent packet loop.
  */
 void drm_connector_attach_hdr10plus_metadata_property(struct drm_connector *connector)
 {
@@ -2933,6 +2936,27 @@ int drm_connector_check_hdr10plus(const struct drm_connector_state *state)
 	return 0;
 }
 EXPORT_SYMBOL(drm_connector_check_hdr10plus);
+
+/**
+ * drm_atomic_hdr10plus_frame_mask - capture primaries before helper expansion
+ * @state: original atomic request
+ *
+ * Return: CRTCs with a primary image supplied by this request.
+ */
+u32 drm_atomic_hdr10plus_frame_mask(struct drm_atomic_commit *state)
+{
+	struct drm_plane *plane;
+	struct drm_plane_state *primary;
+	u32 mask = 0;
+	int i;
+
+	for_each_new_plane_in_state(state, plane, primary, i) {
+		if (primary->crtc && primary->fb && plane == primary->crtc->primary)
+			mask |= drm_crtc_mask(primary->crtc);
+	}
+	return mask;
+}
+EXPORT_SYMBOL(drm_atomic_hdr10plus_frame_mask);
 
 /**
  * drm_connector_attach_broadcast_rgb_property - attach "Broadcast RGB" property
