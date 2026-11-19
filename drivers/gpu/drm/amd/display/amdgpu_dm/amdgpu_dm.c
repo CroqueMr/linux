@@ -6872,9 +6872,30 @@ get_aspect_ratio(const struct drm_display_mode *mode_in)
 	return (enum dc_aspect_ratio) mode_in->picture_aspect_ratio;
 }
 
+/*
+ * CTA video timings use limited RGB in Auto, except VIC 1 (640x480).
+ * HDMI 1.4 4K modes can carry an HDMI VIC instead of an AVI VIC.
+ */
+static bool rgb_output_is_limited_range(const struct dc_crtc_timing *timing,
+					const struct drm_connector_state *state,
+					enum signal_type signal)
+{
+	switch (state->hdmi.broadcast_rgb) {
+	case DRM_HDMI_BROADCAST_RGB_FULL:
+		return false;
+	case DRM_HDMI_BROADCAST_RGB_LIMITED:
+		return true;
+	default:
+		return dc_is_hdmi_signal(signal) &&
+		       state->connector->display_info.is_hdmi &&
+		       (timing->vic > 1 || timing->hdmi_vic);
+	}
+}
+
 static enum dc_color_space
 get_output_color_space(const struct dc_crtc_timing *dc_crtc_timing,
-		       const struct drm_connector_state *connector_state)
+		       const struct drm_connector_state *connector_state,
+		       enum signal_type signal)
 {
 	enum dc_color_space color_space = COLOR_SPACE_SRGB;
 
@@ -6896,16 +6917,20 @@ get_output_color_space(const struct dc_crtc_timing *dc_crtc_timing,
 		break;
 	case DRM_MODE_COLORIMETRY_BT2020_RGB:
 	case DRM_MODE_COLORIMETRY_BT2020_YCC:
-		if (dc_crtc_timing->pixel_encoding == PIXEL_ENCODING_RGB)
-			color_space = COLOR_SPACE_2020_RGB_FULLRANGE;
-		else
+		if (dc_crtc_timing->pixel_encoding == PIXEL_ENCODING_RGB) {
+			if (rgb_output_is_limited_range(dc_crtc_timing, connector_state, signal))
+				color_space = COLOR_SPACE_2020_RGB_LIMITEDRANGE;
+			else
+				color_space = COLOR_SPACE_2020_RGB_FULLRANGE;
+		} else {
 			color_space = COLOR_SPACE_2020_YCBCR_LIMITED;
+		}
 		break;
 	case DRM_MODE_COLORIMETRY_DEFAULT: // ITU601
 	default:
 		if (dc_crtc_timing->pixel_encoding == PIXEL_ENCODING_RGB) {
 			color_space = COLOR_SPACE_SRGB;
-			if (connector_state->hdmi.broadcast_rgb == DRM_HDMI_BROADCAST_RGB_LIMITED)
+			if (rgb_output_is_limited_range(dc_crtc_timing, connector_state, signal))
 				color_space = COLOR_SPACE_SRGB_LIMITED;
 		/*
 		 * 27030khz is the separation point between HDTV and SDTV
@@ -7190,7 +7215,8 @@ static void fill_stream_properties_from_drm_display_mode(
 	}
 
 	amdgpu_dm_hdr10_select_format(stream, connector_state, mode_in, requested_bpc);
-	stream->output_color_space = get_output_color_space(timing_out, connector_state);
+	stream->output_color_space = get_output_color_space(timing_out, connector_state,
+							    stream->signal);
 	stream->content_type = get_output_content_type(connector_state);
 }
 
@@ -8206,7 +8232,7 @@ int amdgpu_dm_connector_atomic_set_property(struct drm_connector *connector,
 	}
 
 	if (property == to_amdgpu_dm_connector(connector)->lldv_format_property) {
-		if (val > 1)
+		if (val != 0 && val != 1 && val != AMDGPU_LLDV_RGB10_LAB)
 			return -EINVAL;
 		dm_new_state->lldv_format = val;
 		return 0;
@@ -11950,7 +11976,8 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
 
 		if ((new_con_state->hdmi.broadcast_rgb != old_con_state->hdmi.broadcast_rgb) &&
 			(dm_old_crtc_state->stream->output_color_space !=
-				get_output_color_space(&dm_new_crtc_state->stream->timing, new_con_state)))
+				get_output_color_space(&dm_new_crtc_state->stream->timing, new_con_state,
+						       dm_new_crtc_state->stream->signal)))
 			output_color_space_changed = true;
 
 		abm_changed = dm_new_crtc_state->abm_level !=
@@ -11973,7 +12000,8 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
 
 		if (output_color_space_changed) {
 			dm_new_crtc_state->stream->output_color_space
-				= get_output_color_space(&dm_new_crtc_state->stream->timing, new_con_state);
+				= get_output_color_space(&dm_new_crtc_state->stream->timing, new_con_state,
+						       dm_new_crtc_state->stream->signal);
 
 			stream_update.output_color_space = &dm_new_crtc_state->stream->output_color_space;
 		}
@@ -14094,7 +14122,7 @@ static int amdgpu_dm_atomic_check(struct drm_device *dev,
 			if (!conn->crtc || !(hdr10plus_primary_mask & drm_crtc_mask(conn->crtc)) ||
 			    drm_connector_check_hdr10plus(conn) || !stream ||
 			    !crtc_state->active || !hdr10plus_has_frame_update(state, conn->crtc) ||
-			    stream->signal != SIGNAL_TYPE_HDMI_TYPE_A ||
+			    !dc_is_hdmi_signal(stream->signal) ||
 			    stream->timing.hdmi_vic ||
 			    convert_dc_color_depth_into_bpc(stream->timing.display_color_depth) < 10 ||
 			    crtc_state->async_flip ||

@@ -37,7 +37,7 @@ intel_display_param_named_unsafe(dmc_firmware_path, charp, 0400,
 	"Use /dev/null to disable DMC and runtime PM.");
 
 intel_display_param_named_unsafe(enable_lldv_lab, bool, 0400,
-		"Enable the CB1 native HDMI LLDV format lab on Alder Lake-N (default: false)");
+		"Legacy CB1 parameter; LLDV is selected per HDMI connector");
 intel_display_param_named_unsafe(enable_dv_lab, bool, 0400,
 	"Experimental Standard-DV RGB8 tunnel, display9+ native HDMI (default: on). "
 	"Requires independently validated packed pixels and HDMI frame metadata.");

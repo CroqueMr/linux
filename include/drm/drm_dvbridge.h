@@ -33,14 +33,14 @@ static inline unsigned int drm_dvbridge_avi_vic(unsigned int cea_vic)
         }
 }
 
-static inline int drm_dvbridge_validate(const struct drm_dvbridge_link *s)
+static inline int drm_dvbridge_validate_link(const struct drm_dvbridge_link *s)
 {
 	if (!s->requested)
 		return 0;
 	if (!s->lab_enabled || !s->sink_standard || !s->native_hdmi)
 		return -EOPNOTSUPP;
 	if (!s->hdmi || !s->rgb || s->limited_range || s->hdr_blob || s->cloned ||
-	    !s->progressive || s->requested_bpc != 8 || s->pipe_bpp != 24 ||
+	    !s->progressive ||
 	    s->colorspace ||
         (s->rounded_refresh != 24 && s->rounded_refresh != 25 &&
          s->rounded_refresh != 30 && s->rounded_refresh != 50 &&
@@ -48,6 +48,17 @@ static inline int drm_dvbridge_validate(const struct drm_dvbridge_link *s)
 		return -EINVAL;
 	if (!((s->width == 1920 && s->height == 1080) ||
 	      (s->width == 3840 && s->height == 2160)))
+		return -EINVAL;
+	return 0;
+}
+
+static inline int drm_dvbridge_validate(const struct drm_dvbridge_link *s)
+{
+	int ret = drm_dvbridge_validate_link(s);
+
+	if (ret || !s->requested)
+		return ret;
+	if (s->requested_bpc != 8 || s->pipe_bpp != 24)
 		return -EINVAL;
 	return 0;
 }

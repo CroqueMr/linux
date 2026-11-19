@@ -4,6 +4,9 @@
 
 #include "amdgpu_dm.h"
 
+/* Separate from the legacy RGB8 carrier consumed by released players. */
+#define AMDGPU_LLDV_RGB10_LAB 3
+
 static inline bool amdgpu_dm_dv_transport(const struct dm_connector_state *state)
 {
 	return state->dv_standard || state->lldv_format;
