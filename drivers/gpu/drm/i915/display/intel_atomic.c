@@ -64,6 +64,12 @@ int intel_digital_connector_atomic_get_property(struct drm_connector *connector,
 	const struct intel_digital_connector_state *intel_conn_state =
 		to_intel_digital_connector_state(state);
 
+	if (to_intel_connector(connector)->dv_lab_property &&
+	    property == to_intel_connector(connector)->dv_lab_property) {
+		*val = intel_conn_state->dv_lab_standard;
+		return 0;
+	}
+
 	if (property == display->properties.force_audio)
 		*val = intel_conn_state->force_audio;
 	else if (property == display->properties.broadcast_rgb)
@@ -96,6 +102,16 @@ int intel_digital_connector_atomic_set_property(struct drm_connector *connector,
 	struct intel_digital_connector_state *intel_conn_state =
 		to_intel_digital_connector_state(state);
 
+	if (to_intel_connector(connector)->dv_lab_property &&
+	    property == to_intel_connector(connector)->dv_lab_property) {
+		if (val > 1 || connector->connector_type != DRM_MODE_CONNECTOR_HDMIA)
+			return -EINVAL;
+		if (val && !display->params.enable_dv_lab)
+			return -EOPNOTSUPP;
+		intel_conn_state->dv_lab_standard = val;
+		return 0;
+	}
+
 	if (property == display->properties.force_audio) {
 		intel_conn_state->force_audio = val;
 		return 0;
@@ -126,8 +142,10 @@ int intel_digital_connector_atomic_check(struct drm_connector *conn,
 
 	intel_hdcp_atomic_check(conn, old_state, new_state);
 
-	if (!new_state->crtc)
+	if (!new_state->crtc) {
+		new_conn_state->dv_lab_standard = false;
 		return 0;
+	}
 
 	crtc_state = drm_atomic_get_new_crtc_state(state, new_state->crtc);
 
@@ -135,7 +153,8 @@ int intel_digital_connector_atomic_check(struct drm_connector *conn,
 	 * These properties are handled by fastset, and might not end
 	 * up in a modeset.
 	 */
-	if (new_conn_state->force_audio != old_conn_state->force_audio ||
+	if (new_conn_state->dv_lab_standard != old_conn_state->dv_lab_standard ||
+	    new_conn_state->force_audio != old_conn_state->force_audio ||
 	    new_conn_state->broadcast_rgb != old_conn_state->broadcast_rgb ||
 	    new_conn_state->base.colorspace != old_conn_state->base.colorspace ||
 	    new_conn_state->base.picture_aspect_ratio != old_conn_state->base.picture_aspect_ratio ||

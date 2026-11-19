@@ -36,6 +36,10 @@ intel_display_param_named_unsafe(dmc_firmware_path, charp, 0400,
 	"DMC firmware path to use instead of the default one. "
 	"Use /dev/null to disable DMC and runtime PM.");
 
+intel_display_param_named_unsafe(enable_dv_lab, bool, 0400,
+	"Experimental Standard-DV RGB8 tunnel lab, Lunar Lake only (default: off). "
+	"Requires independently validated packed pixels and HDMI frame metadata.");
+
 intel_display_param_named_unsafe(vbt_firmware, charp, 0400,
 	"Load VBT from specified file under /lib/firmware");
 
