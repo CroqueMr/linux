@@ -30,6 +30,7 @@
 #include <linux/hdmi.h>
 #include <linux/i2c.h>
 #include <linux/iopoll.h>
+#include <linux/moduleparam.h>
 #include <linux/slab.h>
 #include <linux/string_helpers.h>
 
@@ -848,6 +849,10 @@ intel_hdmi_compute_avi_infoframe(struct intel_encoder *encoder,
 	return true;
 }
 
+static int hdmi_spd_sdi = HDMI_SPD_SDI_DSTB;
+module_param_named(spd_sdi, hdmi_spd_sdi, int, 0644);
+MODULE_PARM_DESC(spd_sdi, "HDMI SPD source device type (0-13, default 1=Digital STB, 9=PC); applies from the next modeset");
+
 static bool
 intel_hdmi_compute_spd_infoframe(struct intel_encoder *encoder,
 				 struct intel_crtc_state *crtc_state,
@@ -855,6 +860,7 @@ intel_hdmi_compute_spd_infoframe(struct intel_encoder *encoder,
 {
 	struct intel_display *display = to_intel_display(crtc_state);
 	struct hdmi_spd_infoframe *frame = &crtc_state->infoframes.spd.spd;
+	const int sdi = READ_ONCE(hdmi_spd_sdi);
 	int ret;
 
 	if (!crtc_state->has_infoframe)
@@ -871,7 +877,8 @@ intel_hdmi_compute_spd_infoframe(struct intel_encoder *encoder,
 	if (drm_WARN_ON(encoder->base.dev, ret))
 		return false;
 
-	frame->sdi = HDMI_SPD_SDI_PC;
+	frame->sdi = sdi >= HDMI_SPD_SDI_UNKNOWN && sdi <= HDMI_SPD_SDI_PMP ?
+		     sdi : HDMI_SPD_SDI_PC;
 
 	ret = hdmi_spd_infoframe_check(frame);
 	if (drm_WARN_ON(encoder->base.dev, ret))
@@ -2882,8 +2889,14 @@ intel_hdmi_detect(struct drm_connector *_connector, bool force)
 
 	wakeref = intel_display_power_get(display, POWER_DOMAIN_GMBUS);
 
+	/* A forced-on link may pulse HPD during a modeset. Re-read its EDID
+	 * before deciding capabilities; absent or incompatible sinks still fail.
+	 */
 	if (DISPLAY_VER(display) >= 11 &&
-	    !intel_digital_port_connected(encoder))
+	    !intel_digital_port_connected(encoder) &&
+	    !(connector->base.status == connector_status_connected &&
+	      (connector->base.force == DRM_FORCE_ON ||
+	       connector->base.force == DRM_FORCE_ON_DIGITAL)))
 		goto out;
 
 	intel_hdmi_unset_edid(&connector->base);
