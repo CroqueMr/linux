@@ -148,6 +148,26 @@ static u32 g4x_infoframe_enable(unsigned int type)
 	}
 }
 
+static bool intel_hdmi_has_gmp_hdr(struct intel_display *display)
+{
+	return DISPLAY_VER(display) == 9 &&
+		(display->platform.skylake || display->platform.kabylake);
+}
+
+bool intel_hdmi_uses_gmp_hdr(const struct intel_crtc_state *crtc_state)
+{
+	return intel_hdmi_has_gmp_hdr(to_intel_display(crtc_state)) &&
+		crtc_state->has_hdmi_sink && crtc_state->cpu_transcoder != TRANSCODER_EDP;
+}
+
+static unsigned int intel_hdmi_dip_type(const struct intel_crtc_state *crtc_state,
+				       unsigned int type)
+{
+	if (type == HDMI_INFOFRAME_TYPE_DRM && intel_hdmi_uses_gmp_hdr(crtc_state))
+		return HDMI_PACKET_TYPE_GAMUT_METADATA;
+	return type;
+}
+
 static u32 hsw_infoframe_enable(unsigned int type)
 {
 	switch (type) {
@@ -530,6 +550,7 @@ void hsw_write_infoframe(struct intel_encoder *encoder,
 	int i;
 	u32 val = intel_de_read(display, ctl_reg);
 
+	type = intel_hdmi_dip_type(crtc_state, type);
 	data_size = hsw_dip_data_size(display, type);
 
 	drm_WARN_ON(display->drm, len > data_size);
@@ -570,6 +591,9 @@ void hsw_read_infoframe(struct intel_encoder *encoder,
 	u32 *data = frame;
 	int i;
 
+	type = intel_hdmi_dip_type(crtc_state, type);
+	memset(frame, 0, len);
+	len = min_t(ssize_t, len, hsw_dip_data_size(display, type));
 	for (i = 0; i < len; i += 4)
 		*data++ = intel_de_read(display,
 					hsw_dip_data_reg(display, cpu_transcoder, type, i >> 2));
@@ -625,16 +649,30 @@ u32 intel_hdmi_infoframes_enabled(struct intel_encoder *encoder,
 	struct intel_display *display = to_intel_display(encoder);
 	struct intel_digital_port *dig_port = enc_to_dig_port(encoder);
 	u32 val, ret = 0;
+	bool gmp_hdr = false;
 	int i;
 
 	val = dig_port->infoframes_enabled(encoder, crtc_state);
+	if (intel_hdmi_uses_gmp_hdr(crtc_state) && (val & VIDEO_DIP_ENABLE_GMP_HSW)) {
+		u32 header = intel_de_read(display, hsw_dip_data_reg(display,
+			crtc_state->cpu_transcoder, HDMI_PACKET_TYPE_GAMUT_METADATA, 0));
+
+		gmp_hdr = (header & 0xffffff) == 0x1a0187;
+	}
 
 	/* map from hardware bits to dip idx */
 	for (i = 0; i < ARRAY_SIZE(infoframe_type_to_idx); i++) {
 		unsigned int type = infoframe_type_to_idx[i];
 
 		if (HAS_DDI(display)) {
-			if (val & hsw_infoframe_enable(type))
+			unsigned int physical = intel_hdmi_dip_type(crtc_state, type);
+
+			/* Preserve a foreign GMP's occupancy so native comparison clears it. */
+			if (intel_hdmi_uses_gmp_hdr(crtc_state) &&
+			    ((type == HDMI_PACKET_TYPE_GAMUT_METADATA && gmp_hdr) ||
+			     (type == HDMI_INFOFRAME_TYPE_DRM && !gmp_hdr)))
+				continue;
+			if (val & hsw_infoframe_enable(physical))
 				ret |= BIT(i);
 		} else {
 			if (val & g4x_infoframe_enable(type))
@@ -668,7 +706,7 @@ static void intel_write_infoframe(struct intel_encoder *encoder,
 				  const union hdmi_infoframe *frame)
 {
 	struct intel_digital_port *dig_port = enc_to_dig_port(encoder);
-	u8 buffer[VIDEO_DIP_DATA_SIZE];
+	u8 buffer[VIDEO_DIP_DATA_SIZE] = {};
 	ssize_t len;
 
 	if ((crtc_state->infoframes.enable &
@@ -771,13 +809,22 @@ intel_hdmi_compute_avi_infoframe(struct intel_encoder *encoder,
 	}
 
 	drm_hdmi_avi_infoframe_content_type(frame, conn_state);
-	if (conn_state->hdr10plus_metadata)
-		frame->video_code = drm_match_cea_mode(adjusted_mode);
+	if (conn_state->hdr10plus_metadata) {
+		frame->video_code = drm_hdmi_avi_infoframe_vic(&connector->base,
+							   drm_match_cea_mode(adjusted_mode));
+		if (!frame->video_code && connector->base.display_info.has_hdmi_infoframe) {
+			struct hdmi_vendor_infoframe legacy;
+
+			/* HDR10+ owns VSIF; a required HDMI-VIC cannot share it. */
+			ret = drm_hdmi_vendor_infoframe_from_display_mode(&legacy,
+							&connector->base, adjusted_mode);
+			if (ret || legacy.vic)
+				return false;
+		}
+	}
 
 	if (to_intel_digital_connector_state(conn_state)->dv_lab_standard) {
-		const struct drm_property_blob *edid = conn_state->connector->edid_blob_ptr;
-		struct dvbridge_sink_caps caps = dvbridge_parse_edid(
-			edid ? edid->data : NULL, edid ? edid->length : 0);
+		struct dvbridge_sink_caps caps = connector->dv_sink_caps;
 
 		/* RGB is a byte tunnel here, not an RGB color-managed picture. */
 		frame->video_code = intel_dv_lab_avi_vic(drm_match_cea_mode(adjusted_mode));
@@ -857,9 +904,8 @@ intel_hdmi_compute_hdmi_infoframe(struct intel_encoder *encoder,
 	if (to_intel_digital_connector_state(conn_state)->dv_lab_standard) {
 		struct hdmi_dolby_vendor_infoframe *dv =
 			&crtc_state->infoframes.hdmi.vendor.dolby;
-		const struct drm_property_blob *edid = conn_state->connector->edid_blob_ptr;
-		struct dvbridge_sink_caps caps = dvbridge_parse_edid(
-			edid ? edid->data : NULL, edid ? edid->length : 0);
+		struct dvbridge_sink_caps caps =
+			to_intel_connector(conn_state->connector)->dv_sink_caps;
 		unsigned int vic = drm_match_cea_mode(&crtc_state->hw.adjusted_mode);
 
 		/* AVI carries the CTA timing. Reserve the vendor slot for Dolby;
@@ -903,7 +949,7 @@ intel_hdmi_compute_drm_infoframe(struct intel_encoder *encoder,
 	struct hdmi_drm_infoframe *frame = &crtc_state->infoframes.drm.drm;
 	int ret;
 
-	if (DISPLAY_VER(display) < 10)
+	if (DISPLAY_VER(display) < 10 && !intel_hdmi_has_gmp_hdr(display))
 		return true;
 
 	if (!crtc_state->has_infoframe)
@@ -911,6 +957,8 @@ intel_hdmi_compute_drm_infoframe(struct intel_encoder *encoder,
 
 	if (!conn_state->hdr_output_metadata)
 		return true;
+	if (DISPLAY_VER(display) == 9 && !intel_hdmi_uses_gmp_hdr(crtc_state))
+		return false;
 
 	crtc_state->infoframes.enable |=
 		intel_hdmi_infoframe_enable(HDMI_INFOFRAME_TYPE_DRM);
@@ -1336,6 +1384,10 @@ void intel_hdmi_fastset_infoframes(struct intel_encoder *encoder,
 	intel_reg_t reg = HSW_TVIDEO_DIP_CTL(display,
 					    crtc_state->cpu_transcoder);
 	u32 val = intel_de_read(display, reg);
+
+	/* Changed GMP HDR packets use a full modeset; unchanged ones need no write. */
+	if (intel_hdmi_uses_gmp_hdr(crtc_state))
+		return;
 
 	if ((crtc_state->infoframes.enable &
 		intel_hdmi_infoframe_enable(HDMI_INFOFRAME_TYPE_DRM)) == 0 &&
@@ -2406,8 +2458,8 @@ static bool intel_dvbridge_hdr_deep_requested(struct intel_display *display,
 	const struct hdr_output_metadata *hdr;
 
 	/* Display10 carries ten-bit content through its native twelve-bit link. */
-	if (DISPLAY_VER(display) < 10 ||
-	    (DISPLAY_VER(display) == 10 && state->max_requested_bpc < 12) ||
+	if ((DISPLAY_VER(display) < 10 && !intel_hdmi_has_gmp_hdr(display)) ||
+	    (DISPLAY_VER(display) <= 10 && state->max_requested_bpc < 12) ||
 	    (!to_intel_digital_connector_state(state)->dv_hdr10_deep_color &&
 	     !state->hdr10plus_metadata) ||
 	    to_intel_digital_connector_state(state)->dv_lab_standard ||
@@ -2585,9 +2637,7 @@ int intel_hdmi_compute_config(struct intel_encoder *encoder,
 		intel_hdmi_limited_color_range(pipe_config, conn_state);
 
 	if (to_intel_digital_connector_state(conn_state)->dv_lab_standard) {
-		const struct drm_property_blob *edid = connector->base.edid_blob_ptr;
-		struct dvbridge_sink_caps caps = dvbridge_parse_edid(
-			edid ? edid->data : NULL, edid ? edid->length : 0);
+		struct dvbridge_sink_caps caps = connector->dv_sink_caps;
 		struct intel_dv_lab_link link = {
 			.requested = true,
 			.lab_enabled = display->params.enable_dv_lab &&
@@ -2706,6 +2756,7 @@ intel_hdmi_unset_edid(struct drm_connector *_connector)
 
 	drm_edid_free(connector->detect_edid);
 	connector->detect_edid = NULL;
+	connector->dv_sink_caps = (struct dvbridge_sink_caps){};
 }
 
 static void
@@ -2771,6 +2822,7 @@ intel_hdmi_set_edid(struct drm_connector *_connector)
 	struct ref_tracker *wakeref;
 	const struct drm_edid *drm_edid;
 	bool connected = false;
+	int ret;
 
 	wakeref = intel_display_power_get(display, POWER_DOMAIN_GMBUS);
 
@@ -2785,11 +2837,15 @@ intel_hdmi_set_edid(struct drm_connector *_connector)
 	}
 
 	/* Below we depend on display info having been updated */
-	drm_edid_connector_update(&connector->base, drm_edid);
+	ret = drm_edid_connector_update(&connector->base, drm_edid);
 
 	connector->detect_edid = drm_edid;
+	connector->dv_sink_caps = (struct dvbridge_sink_caps){};
 
 	if (drm_edid_is_digital(drm_edid)) {
+		if (!ret)
+			connector->dv_sink_caps = dvbridge_parse_edid(
+				(const u8 *)drm_edid_raw(drm_edid), drm_edid_size(drm_edid));
 		intel_hdmi_dp_dual_mode_detect(&connector->base);
 
 		connected = true;
@@ -2816,8 +2872,10 @@ intel_hdmi_detect(struct drm_connector *_connector, bool force)
 	drm_dbg_kms(display->drm, "[CONNECTOR:%d:%s]\n",
 		    connector->base.base.id, connector->base.name);
 
-	if (!intel_display_device_enabled(display))
+	if (!intel_display_device_enabled(display)) {
+		connector->dv_sink_caps = (struct dvbridge_sink_caps){};
 		return connector_status_disconnected;
+	}
 
 	if (!intel_display_driver_check_access(display))
 		return connector->base.status;
@@ -2836,8 +2894,10 @@ intel_hdmi_detect(struct drm_connector *_connector, bool force)
 out:
 	intel_display_power_put(display, POWER_DOMAIN_GMBUS, wakeref);
 
-	if (status != connector_status_connected)
+	if (status != connector_status_connected) {
+		connector->dv_sink_caps = (struct dvbridge_sink_caps){};
 		cec_notifier_phys_addr_invalidate(intel_hdmi->cec_notifier);
+	}
 
 	return status;
 }
@@ -2850,6 +2910,8 @@ intel_hdmi_force(struct drm_connector *_connector)
 
 	drm_dbg_kms(display->drm, "[CONNECTOR:%d:%s]\n",
 		    connector->base.base.id, connector->base.name);
+	if (connector->base.status != connector_status_connected)
+		connector->dv_sink_caps = (struct dvbridge_sink_caps){};
 
 	if (!intel_display_driver_check_access(display))
 		return;
@@ -2939,12 +3001,9 @@ intel_hdmi_add_properties(struct intel_hdmi *intel_hdmi, struct drm_connector *_
 			drm_object_attach_property(&_connector->base, connector->dv_lab_property, 0);
 	}
 
-	if (DISPLAY_VER(display) >= 10) {
+	if (DISPLAY_VER(display) >= 10 || intel_hdmi_has_gmp_hdr(display)) {
 		ratelimit_state_init(&connector->dv_log_limit, 30 * HZ, 1);
-		connector->dv_hdr10_property = drm_property_create_bool(display->drm,
-			DRM_MODE_PROP_ATOMIC, "DVBRIDGE_HDR10_DEEP_COLOR");
-		if (connector->dv_hdr10_property)
-			drm_object_attach_property(&_connector->base, connector->dv_hdr10_property, 0);
+		intel_attach_hdr10_deep_color_property(_connector);
 	}
 
 	intel_attach_force_audio_property(&connector->base);
@@ -2954,7 +3013,7 @@ intel_hdmi_add_properties(struct intel_hdmi *intel_hdmi, struct drm_connector *_
 	intel_attach_hdmi_colorspace_property(&connector->base);
 	drm_connector_attach_content_type_property(&connector->base);
 
-	if (DISPLAY_VER(display) >= 10)
+	if (DISPLAY_VER(display) >= 10 || intel_hdmi_has_gmp_hdr(display))
 		drm_connector_attach_hdr_output_metadata_property(&connector->base);
 	if (DISPLAY_VER(display) >= 10)
 		drm_connector_attach_hdr10plus_metadata_property(&connector->base);

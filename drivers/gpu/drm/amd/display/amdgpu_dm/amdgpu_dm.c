@@ -7264,6 +7264,9 @@ decide_crtc_timing_for_drm_display_mode(struct drm_display_mode *drm_mode,
 					const struct drm_display_mode *native_mode,
 					bool scale_enabled)
 {
+	/* DRM has already expanded this timing for both eyes. */
+	if ((drm_mode->flags & DRM_MODE_FLAG_3D_MASK) == DRM_MODE_FLAG_3D_FRAME_PACKING)
+		return;
 	if (scale_enabled || (
 	    native_mode->clock == drm_mode->clock &&
 	    native_mode->htotal == drm_mode->htotal &&
@@ -7452,8 +7455,10 @@ static bool is_freesync_video_mode(const struct drm_display_mode *mode,
 	struct drm_display_mode *high_mode;
 	int timing_diff;
 
+	if (!mode || (mode->flags & DRM_MODE_FLAG_3D_MASK))
+		return false;
 	high_mode = get_highest_refresh_rate_mode(aconnector, false);
-	if (!high_mode || !mode)
+	if (!high_mode)
 		return false;
 
 	timing_diff = high_mode->vtotal - mode->vtotal;
@@ -7739,6 +7744,44 @@ static int fill_hdr10plus_stream_packet(const struct drm_property_blob *blob,
 	return fill_hdr10plus_info_packet(blob, &stream->vsp_infopacket);
 }
 
+static void amdgpu_dm_build_hdmi_vsif(const struct drm_connector *connector,
+				    const struct drm_display_mode *mode,
+				    struct dc_info_packet *out)
+{
+	struct hdmi_vendor_infoframe frame;
+	u8 buffer[HDMI_INFOFRAME_SIZE(VENDOR)];
+	ssize_t length;
+
+	memset(out, 0, sizeof(*out));
+	if (drm_hdmi_vendor_infoframe_from_display_mode(&frame, connector, mode))
+		return;
+	length = hdmi_vendor_infoframe_pack(&frame, buffer, sizeof(buffer));
+	if (length < 0)
+		return;
+	out->hb0 = buffer[0];
+	out->hb1 = buffer[1];
+	out->hb2 = buffer[2];
+	memcpy(out->sb, buffer + 3, length - 3);
+	out->valid = true;
+}
+
+static bool amdgpu_dm_stereo_mode_supported(const struct drm_connector *connector,
+					 const struct drm_display_mode *mode)
+{
+	u32 layout = mode->flags & DRM_MODE_FLAG_3D_MASK;
+
+	if (!layout)
+		return true;
+	if (connector->connector_type != DRM_MODE_CONNECTOR_HDMIA ||
+	    !connector->display_info.is_hdmi || !connector->display_info.has_hdmi_infoframe ||
+	    (mode->flags & DRM_MODE_FLAG_INTERLACE))
+		return false;
+
+	return layout == DRM_MODE_FLAG_3D_FRAME_PACKING ||
+	       layout == DRM_MODE_FLAG_3D_TOP_AND_BOTTOM ||
+	       layout == DRM_MODE_FLAG_3D_SIDE_BY_SIDE_HALF;
+}
+
 static struct dc_stream_state *
 create_stream_for_sink(struct drm_connector *connector,
 		       const struct drm_display_mode *drm_mode,
@@ -7768,12 +7811,14 @@ create_stream_for_sink(struct drm_connector *connector,
 
 	if (amdgpu_dm_hdr10_validate(dm_state))
 		return NULL;
+	if (!amdgpu_dm_stereo_mode_supported(connector, drm_mode))
+		return NULL;
 	/* Dolby Vision and stereoscopic HDMI use different VSIF payloads. */
 	if (dm_state->dv_standard && (drm_mode->flags & DRM_MODE_FLAG_3D_MASK))
 		return NULL;
 
 	drm_mode_init(&mode, drm_mode);
-	if (mode.flags & DRM_MODE_FLAG_3D_FRAME_PACKING)
+	if ((mode.flags & DRM_MODE_FLAG_3D_MASK) == DRM_MODE_FLAG_3D_FRAME_PACKING)
 		drm_mode_set_crtcinfo(&mode, CRTC_STEREO_DOUBLE);
 	memset(&saved_mode, 0, sizeof(saved_mode));
 
@@ -7913,7 +7958,6 @@ create_stream_for_sink(struct drm_connector *connector,
 			stream->view_format = VIEW_3D_FORMAT_TOP_AND_BOTTOM;
 			break;
 		case DRM_MODE_FLAG_3D_SIDE_BY_SIDE_HALF:
-		case DRM_MODE_FLAG_3D_SIDE_BY_SIDE_FULL:
 			stream->timing.timing_3d_format = TIMING_3D_FORMAT_SBS_SW_PACKED;
 			stream->view_format = VIEW_3D_FORMAT_SIDE_BY_SIDE;
 			break;
@@ -7924,7 +7968,12 @@ create_stream_for_sink(struct drm_connector *connector,
 		default:
 			break;
 		}
-		mod_build_hf_vsif_infopacket(stream, &stream->vsp_infopacket, false, false);
+		if (mode.flags & DRM_MODE_FLAG_3D_MASK) {
+			memset(&stream->vsp_infopacket, 0, sizeof(stream->vsp_infopacket));
+			mod_build_hf_vsif_infopacket(stream, &stream->vsp_infopacket, false, false);
+		} else {
+			amdgpu_dm_build_hdmi_vsif(connector, &mode, &stream->vsp_infopacket);
+		}
 		stream->timing.timing_3d_format = saved_3d;
 		stream->view_format = saved_view;
 	}
@@ -12342,6 +12391,8 @@ is_timing_unchanged_for_freesync(struct drm_crtc_state *old_crtc_state,
 	new_mode = &new_crtc_state->mode;
 
 	if (old_mode->clock       == new_mode->clock &&
+	    (old_mode->flags & DRM_MODE_FLAG_3D_MASK) ==
+	    (new_mode->flags & DRM_MODE_FLAG_3D_MASK) &&
 	    old_mode->hdisplay    == new_mode->hdisplay &&
 	    old_mode->vdisplay    == new_mode->vdisplay &&
 	    old_mode->htotal      == new_mode->htotal &&

@@ -229,10 +229,12 @@
 
 struct dce_ipp_shift {
 	IPP_REG_FIELD_LIST(uint8_t);
+	uint8_t INPUT_CSC_GRPH_MODE;
 };
 
 struct dce_ipp_mask {
 	IPP_REG_FIELD_LIST(uint32_t);
+	uint32_t INPUT_CSC_GRPH_MODE;
 };
 
 struct dce_ipp_registers {
@@ -257,6 +259,7 @@ struct dce_ipp_registers {
 	uint32_t DC_LUT_RW_INDEX;
 	uint32_t DC_LUT_SEQ_COLOR;
 	uint32_t DEGAMMA_CONTROL;
+	uint32_t INPUT_CSC_CONTROL;
 };
 
 struct dce_ipp {
@@ -264,7 +267,11 @@ struct dce_ipp {
 	const struct dce_ipp_registers *regs;
 	const struct dce_ipp_shift *ipp_shift;
 	const struct dce_ipp_mask *ipp_mask;
+	uint32_t dv_csc_mode;
+	bool dv_csc_saved;
 };
+
+void dce_ipp_reset_dv(struct input_pixel_processor *ipp);
 
 void dce_ipp_construct(struct dce_ipp *ipp_dce,
 	struct dc_context *ctx,
