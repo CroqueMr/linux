@@ -381,6 +381,8 @@ struct hdmi_vendor_infoframe {
 	u8 vic;
 	enum hdmi_3d_structure s3d_struct;
 	unsigned int s3d_ext_data;
+	/* Explicit opt-in: HDMI-1.4b Standard-DV vendor packet, never ordinary 3D. */
+	bool dolby_vision;
 };
 
 /* HDR Metadata as per 861.G spec */

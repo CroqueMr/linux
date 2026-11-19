@@ -28,6 +28,7 @@
 
 #include <linux/pm_qos.h>
 #include <linux/pwm.h>
+#include <linux/ratelimit.h>
 
 #include <drm/display/drm_dp_dual_mode_helper.h>
 #include <drm/display/drm_dp_mst_helper.h>
@@ -521,6 +522,8 @@ struct intel_connector {
 	struct drm_connector base;
 	/* Private experimental property; absent unless explicitly enabled at boot. */
 	struct drm_property *dv_lab_property;
+	/* Diagnostics only: no influence on DV admission or recovery. */
+	struct ratelimit_state dv_log_limit;
 	/*
 	 * The fixed encoder this connector is connected to.
 	 */
