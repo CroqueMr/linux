@@ -226,6 +226,7 @@ struct mt792x_phy {
 	struct work_struct roc_work;
 	struct timer_list roc_timer;
 	wait_queue_head_t roc_wait;
+	struct mt792x_bss_conf *roc_join_owner; /* MT7925 non-MLO association */
 	u8 roc_token_id;
 	bool roc_grant;
 };
