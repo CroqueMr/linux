@@ -795,6 +795,7 @@ struct amdgpu_dm_connector {
 	struct drm_connector base;
 	struct drm_property *dv_standard_property;
 	struct drm_property *lldv_format_property;
+	struct drm_property *lldv_native_formats_property;
 	struct drm_property *hdr10_deep_color_property;
 	uint32_t connector_id;
 	int bl_idx;

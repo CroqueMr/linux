@@ -2311,6 +2311,9 @@ void dcn401_program_pipe(
 		pipe_ctx->stream_res.opp->funcs->opp_set_dyn_expansion(
 			pipe_ctx->stream_res.opp,
 			COLOR_SPACE_YCBCR601,
+			(pipe_ctx->stream->dv_native_lldv &&
+			 pipe_ctx->stream->timing.pixel_encoding == PIXEL_ENCODING_YCBCR422) ?
+			COLOR_DEPTH_UNDEFINED :
 			pipe_ctx->stream->timing.display_color_depth,
 			pipe_ctx->stream->signal);
 
@@ -2468,6 +2471,9 @@ void dcn401_program_pipe_sequence(
 		|| pipe_ctx->update_flags.bits.opp_changed) {
 
 		hwss_add_opp_set_dyn_expansion(seq_state, pipe_ctx->stream_res.opp, COLOR_SPACE_YCBCR601,
+			(pipe_ctx->stream->dv_native_lldv &&
+			 pipe_ctx->stream->timing.pixel_encoding == PIXEL_ENCODING_YCBCR422) ?
+			COLOR_DEPTH_UNDEFINED :
 			pipe_ctx->stream->timing.display_color_depth, pipe_ctx->stream->signal);
 
 		hwss_add_opp_program_fmt(seq_state, pipe_ctx->stream_res.opp,

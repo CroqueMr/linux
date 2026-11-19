@@ -39,6 +39,7 @@
 #include "intel_cdclk.h"
 #include "intel_display_core.h"
 #include "intel_display_types.h"
+#include "intel_dv_lab_policy.h"
 #include "intel_dp_tunnel.h"
 #include "intel_fb.h"
 #include "intel_global_state.h"
@@ -121,7 +122,7 @@ int intel_digital_connector_atomic_set_property(struct drm_connector *connector,
 		return 0;
 	}
 	if (property == to_intel_connector(connector)->lldv_format_property) {
-		if (val > 2)
+		if (val > INTEL_LLDV_RGB10)
 			return -EINVAL;
 		intel_conn_state->lldv_format = val;
 		return 0;

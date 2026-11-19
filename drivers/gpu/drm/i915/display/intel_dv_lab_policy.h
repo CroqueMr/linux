@@ -7,6 +7,8 @@
 #define intel_dv_lab_avi_vic drm_dvbridge_avi_vic
 #define intel_dv_lab_validate drm_dvbridge_validate
 
+#define INTEL_LLDV_RGB10 3
+
 static inline bool intel_dv_lab_native_hdmi(bool lspcon_active,
 					 bool dual_mode_detected, bool vbt_dual_mode)
 {

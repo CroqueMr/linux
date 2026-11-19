@@ -4328,11 +4328,19 @@ static int intel_dv_lab_scanout_check(struct intel_atomic_state *state,
 		p = primary->state; /* unchanged plane, serialized by this CRTC's lock */
 	if (!p || !p->fb)
 		return intel_dv_lab_scanout_reject(crtc, "primary-missing", 1);
+	const bool rgb10 = s->pipe_bpp == 30 &&
+		s->infoframes.hdmi.vendor.any.oui == HDMI_DOLBY_IEEE_OUI &&
+		s->infoframes.hdmi.vendor.dolby.low_latency;
+	const u32 format = p->fb->format->format;
+	const bool format_ok = rgb10 ?
+		(format == DRM_FORMAT_XRGB2101010 || format == DRM_FORMAT_XBGR2101010) :
+		format == DRM_FORMAT_XRGB8888;
+
 	/* Reason bits: route/visible, format, allocation, source, destination,
-	 * rotation, alpha. Preserve the original admission conditions exactly.
+	 * rotation, alpha.
 	 */
 	reasons = (p->crtc != &crtc->base || !p->visible) |
-		 ((p->fb->format->format != DRM_FORMAT_XRGB8888) << 1) |
+		 ((!format_ok) << 1) |
 		 ((p->fb->width != w || p->fb->height != h) << 2) |
 		 ((p->src_x || p->src_y || p->src_w != (w << 16) || p->src_h != (h << 16)) << 3) |
 		 ((p->crtc_x || p->crtc_y || p->crtc_w != w || p->crtc_h != h) << 4) |

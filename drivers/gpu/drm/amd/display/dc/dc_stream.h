@@ -179,7 +179,7 @@ struct dc_stream_state {
 	/* RGB8 carries packed video/metadata, not color-managed RGB content. */
 	bool dv_standard; /* Byte-preserving HDMI pipeline, including low latency. */
 	bool dv_low_latency;
-	bool dv_native_422;
+	bool dv_native_lldv;
 	struct dc_panel_patch sink_patches;
 	struct dc_crtc_timing timing;
 	struct dc_crtc_timing_adjust adjust;

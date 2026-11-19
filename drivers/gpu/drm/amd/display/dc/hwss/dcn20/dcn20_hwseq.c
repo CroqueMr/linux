@@ -2005,7 +2005,9 @@ static void dcn20_program_pipe(
 			pipe_ctx->stream_res.opp,
 			COLOR_SPACE_YCBCR601,
 			/* Suppress 10-to-12-bit replication for the native LLDV stream. */
-			pipe_ctx->stream->dv_native_422 ? COLOR_DEPTH_UNDEFINED :
+			(pipe_ctx->stream->dv_native_lldv &&
+			 pipe_ctx->stream->timing.pixel_encoding == PIXEL_ENCODING_YCBCR422) ?
+			COLOR_DEPTH_UNDEFINED :
 			pipe_ctx->stream->timing.display_color_depth,
 			pipe_ctx->stream->signal);
 
