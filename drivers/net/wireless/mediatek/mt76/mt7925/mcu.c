@@ -331,11 +331,12 @@ static void mt7925_mcu_roc_handle_grant(struct mt792x_dev *dev,
 		ieee80211_iterate_active_interfaces_atomic(hw,
 						IEEE80211_IFACE_ITER_RESUME_ALL,
 						mt7925_mcu_roc_iter, grant);
-	dev->phy.roc_grant = true;
-	wake_up(&dev->phy.roc_wait);
 	duration = le32_to_cpu(grant->max_interval);
 	mod_timer(&dev->phy.roc_timer,
 		  jiffies + msecs_to_jiffies(duration));
+	/* Expiry work checks this timer when the waiter releases the mutex. */
+	smp_store_release(&dev->phy.roc_grant, true);
+	wake_up(&dev->phy.roc_wait);
 }
 
 static void
