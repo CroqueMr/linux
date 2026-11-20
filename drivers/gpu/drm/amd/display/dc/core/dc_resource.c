@@ -1521,7 +1521,8 @@ static enum lb_pixel_depth resource_get_lb_depth(
 		const struct dc_stream_state *stream)
 {
 	/* RGB8 tunnel bytes must not pass through DCE's 10-bit normalization. */
-	if (stream->dv_standard && plane_state->ctx->dce_version == DCE_VERSION_11_22)
+	if (stream->dv_standard && (plane_state->ctx->dce_version == DCE_VERSION_11_22 ||
+				    plane_state->ctx->dce_version == DCE_VERSION_11_2))
 		return LB_PIXEL_DEPTH_24BPP;
 	return plane_state->ctx->dce_version > DCE_VERSION_MAX ?
 		LB_PIXEL_DEPTH_36BPP : LB_PIXEL_DEPTH_30BPP;
@@ -3722,7 +3723,8 @@ bool dc_is_timing_changed(struct dc_stream_state *cur_stream,
 
 	/* Entry and exit must reprogram HDMI packets and the color pipeline. */
 	if (cur_stream->dv_standard != new_stream->dv_standard ||
-	    cur_stream->dv_low_latency != new_stream->dv_low_latency)
+	    cur_stream->dv_low_latency != new_stream->dv_low_latency ||
+	    cur_stream->dv_native_422 != new_stream->dv_native_422)
 		return true;
 
 	if (cur_stream->vsp_infopacket.valid != new_stream->vsp_infopacket.valid ||

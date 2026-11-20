@@ -25,6 +25,18 @@ static bool dv_lldv;
 module_param_named(dv_lldv, dv_lldv, bool, 0444);
 MODULE_PARM_DESC(dv_lldv, "Expose experimental player-led 4:2:2 on native AMD HDMI");
 
+static bool dv_rx550(const struct dc_context *ctx)
+{
+	return ctx && ctx->dce_version == DCE_VERSION_11_2 &&
+		ctx->asic_id.chip_id == 0x699f; /* Polaris12 / Lexa */
+}
+
+static bool dv_rx550_mode(const struct drm_display_mode *mode)
+{
+	return mode->hdisplay == 3840 && mode->vdisplay == 2160 &&
+		mode->clock == 296703 && drm_match_cea_mode(mode) == 93;
+}
+
 static bool dv_display_supported(enum dce_version version)
 {
 	/* Explicit families, not a >= comparison that enables unknown hardware. */
@@ -46,12 +58,18 @@ static bool dv_display_supported(enum dce_version version)
 	}
 }
 
+static bool dv_lldv_native_supported(enum dce_version version)
+{
+	return version == DCN_VERSION_2_1;
+}
+
 void amdgpu_dm_dv_attach(struct amdgpu_dm_connector *connector)
 {
 	struct amdgpu_device *adev = drm_to_adev(connector->base.dev);
 
-	const bool family = adev->dm.dc &&
-		dv_display_supported(adev->dm.dc->ctx->dce_version);
+	const struct dc_context *ctx = adev->dm.dc ? adev->dm.dc->ctx : NULL;
+	const bool rx550 = dv_rx550(ctx);
+	const bool family = ctx && (rx550 || dv_display_supported(ctx->dce_version));
 	const bool hdmi = connector->base.connector_type == DRM_MODE_CONNECTOR_HDMIA &&
 		connector->dc_link &&
 		connector->dc_link->connector_signal == SIGNAL_TYPE_HDMI_TYPE_A;
@@ -72,14 +90,17 @@ void amdgpu_dm_dv_attach(struct amdgpu_dm_connector *connector)
 			drm_object_attach_property(&connector->base.base,
 					connector->dv_standard_property, 0);
 	}
-	if (dv_lldv) {
+	if (dv_lldv && !rx550) {
 		static const struct drm_prop_enum_list formats[] = {
 			{ 0, "Off" },
 			{ 1, "YCbCr 4:2:2 10 bits forced" },
+			{ AMDGPU_LLDV_RGB10_LAB, "YCbCr 4:2:2 10 bits RGB10 lab" },
 		};
 
 		connector->lldv_format_property = drm_property_create_enum(connector->base.dev,
-			DRM_MODE_PROP_ATOMIC, "CB1_LLDV_FORMAT", formats, ARRAY_SIZE(formats));
+			DRM_MODE_PROP_ATOMIC, "CB1_LLDV_FORMAT", formats,
+			dv_lldv_native_supported(adev->dm.dc->ctx->dce_version) ?
+			ARRAY_SIZE(formats) : ARRAY_SIZE(formats) - 1);
 		if (connector->lldv_format_property)
 			drm_object_attach_property(&connector->base.base,
 					connector->lldv_format_property, 0);
@@ -214,10 +235,12 @@ int amdgpu_dm_dv_configure_stream(struct dc_stream_state *stream,
 	struct dc_info_packet avi_packet, vsp_packet;
 	u8 wire[HDMI_INFOFRAME_SIZE(DOLBY_VENDOR)];
 	const bool lldv = state->lldv_format != 0;
+	const bool native = state->lldv_format == AMDGPU_LLDV_RGB10_LAB;
+	const bool rx550 = dv_rx550(stream->ctx);
 	struct drm_dvbridge_link link = {
 		.requested = amdgpu_dm_dv_transport(state),
 		.lab_enabled = (lldv ? dv_lldv : dv_standard) && stream->ctx &&
-			dv_display_supported(stream->ctx->dce_version),
+			(rx550 ? !lldv : dv_display_supported(stream->ctx->dce_version)),
 		.sink_standard = lldv ? lldv_sink_supported(&caps, mode) :
 			dv_sink_supported(&caps, mode),
 		.hdmi = stream->signal == SIGNAL_TYPE_HDMI_TYPE_A &&
@@ -239,10 +262,21 @@ int amdgpu_dm_dv_configure_stream(struct dc_stream_state *stream,
 
 	if (!link.requested)
 		return 0;
+	if (rx550 && !dv_rx550_mode(mode))
+		return -EOPNOTSUPP;
 	if (state->hdr10_deep_color || (lldv && (state->dv_standard ||
-	    state->lldv_format != 1 || state->base.hdr10plus_metadata)))
+	    (state->lldv_format != 1 && !native) || state->base.hdr10plus_metadata)))
 		return -EINVAL;
-	ret = drm_dvbridge_validate(&link);
+	if (native) {
+		const struct drm_display_info *info = &connector->display_info;
+
+		if (!stream->ctx || !dv_lldv_native_supported(stream->ctx->dce_version) ||
+		    link.requested_bpc != 10 || drm_mode_is_420_only(info, mode) ||
+		    !(info->color_formats & BIT(DRM_OUTPUT_COLOR_FORMAT_YCBCR422)) ||
+		    info->max_tmds_clock <= 0 || mode->clock > info->max_tmds_clock)
+			return -EOPNOTSUPP;
+	}
+	ret = native ? drm_dvbridge_validate_link(&link) : drm_dvbridge_validate(&link);
 	if (ret)
 		return ret;
 	if (!(lldv ? aconnector->lldv_format_property : aconnector->dv_standard_property) ||
@@ -297,12 +331,18 @@ int amdgpu_dm_dv_configure_stream(struct dc_stream_state *stream,
 	stream->vsp_infopacket = vsp_packet;
 	stream->dv_standard = true;
 	stream->dv_low_latency = lldv;
+	stream->dv_native_422 = native;
 	stream->timing.hdmi_vic = caps.legacy_vsif ? legacy.vic : 0;
 	stream->timing.vic = avi.video_code;
-	stream->output_color_space = COLOR_SPACE_SRGB;
+	if (native) {
+		stream->timing.pixel_encoding = PIXEL_ENCODING_YCBCR422;
+		stream->timing.display_color_depth = COLOR_DEPTH_101010;
+	}
+	stream->output_color_space = native ? COLOR_SPACE_2020_YCBCR_LIMITED : COLOR_SPACE_SRGB;
 	stream->out_transfer_func.type = TF_TYPE_BYPASS;
 	stream->out_transfer_func.tf = TRANSFER_FUNCTION_LINEAR;
-	stream->dither_option = DITHER_OPTION_DISABLE;
+	stream->dither_option = native ? DITHER_OPTION_TRUN10 :
+		(rx550 ? DITHER_OPTION_TRUN8 : DITHER_OPTION_DISABLE);
 	stream->qs_bit = 1;
 	return 0;
 }
@@ -370,7 +410,7 @@ static bool dv_identity_tf(enum amdgpu_transfer_function tf)
 }
 
 static bool dv_plane_neutral(const struct drm_plane_state *p,
-			     const struct drm_display_mode *mode)
+			     const struct drm_display_mode *mode, bool native)
 {
 	const struct dm_plane_state *dm = to_dm_plane_state(p);
 	const struct dc_plane_state *dc = dm->dc_state;
@@ -390,8 +430,10 @@ static bool dv_plane_neutral(const struct drm_plane_state *p,
 		return false;
 
 	return p->plane->type != DRM_PLANE_TYPE_CURSOR && p->fb &&
-		(p->fb->format->format == DRM_FORMAT_XRGB8888 ||
-		 p->fb->format->format == DRM_FORMAT_XBGR8888) &&
+		(native ? (p->fb->format->format == DRM_FORMAT_XRGB2101010 ||
+			   p->fb->format->format == DRM_FORMAT_XBGR2101010) :
+			  (p->fb->format->format == DRM_FORMAT_XRGB8888 ||
+			   p->fb->format->format == DRM_FORMAT_XBGR8888)) &&
 		p->rotation == DRM_MODE_ROTATE_0 && p->alpha == DRM_BLEND_ALPHA_OPAQUE &&
 		/* Primary planes do not expose pixel blend mode on AMD. XRGB/XBGR
 		 * have no alpha channel: upstream disables per-pixel blending even
@@ -437,6 +479,7 @@ int amdgpu_dm_dv_atomic_check(struct drm_atomic_commit *state)
 		struct dm_crtc_state *dm = to_dm_crtc_state(cs);
 		struct dc_stream_state *stream = dm->stream;
 		unsigned int planes = 0, connectors = 0;
+		const bool native = stream && stream->dv_native_422;
 
 		if (!cs->active || !stream || !stream->dv_standard)
 			continue;
@@ -448,13 +491,15 @@ int amdgpu_dm_dv_atomic_check(struct drm_atomic_commit *state)
 		    dm->freesync_config.state == VRR_STATE_ACTIVE_VARIABLE ||
 		    cs->ctm || cs->gamma_lut || cs->degamma_lut || cs->vrr_enabled ||
 		    cs->async_flip || !dv_identity_tf(dm->regamma_tf) ||
-		    stream->dither_option != DITHER_OPTION_DISABLE ||
+		    stream->dither_option != (native ? DITHER_OPTION_TRUN10 :
+			(dv_rx550(stream->ctx) ? DITHER_OPTION_TRUN8 : DITHER_OPTION_DISABLE)) ||
 		    stream->out_transfer_func.type != TF_TYPE_BYPASS ||
 		    stream->gamut_remap_matrix.enable_remap || stream->csc_color_matrix.enable_adjustment ||
-		    stream->output_color_space != COLOR_SPACE_SRGB ||
+		    stream->output_color_space != (native ? COLOR_SPACE_2020_YCBCR_LIMITED : COLOR_SPACE_SRGB) ||
 		    stream->signal != SIGNAL_TYPE_HDMI_TYPE_A ||
 		    !stream->avi_infopacket.valid || !stream->vsp_infopacket.valid ||
 		    /* Recheck the DC raster after global validation, not only the plane. */
+		    (dv_rx550(stream->ctx) && !dv_rx550_mode(&cs->mode)) ||
 		    stream->timing.flags.INTERLACE ||
 		    stream->timing.timing_3d_format != TIMING_3D_FORMAT_NONE ||
 		    stream->timing.h_border_left || stream->timing.h_border_right ||
@@ -465,8 +510,8 @@ int amdgpu_dm_dv_atomic_check(struct drm_atomic_commit *state)
 		    stream->src.width != cs->mode.hdisplay || stream->src.height != cs->mode.vdisplay ||
 		    stream->dst.x || stream->dst.y ||
 		    stream->dst.width != cs->mode.hdisplay || stream->dst.height != cs->mode.vdisplay ||
-		    stream->timing.pixel_encoding != PIXEL_ENCODING_RGB ||
-		    stream->timing.display_color_depth != COLOR_DEPTH_888 || stream->timing.flags.DSC)
+		    stream->timing.pixel_encoding != (native ? PIXEL_ENCODING_YCBCR422 : PIXEL_ENCODING_RGB) ||
+		    stream->timing.display_color_depth != (native ? COLOR_DEPTH_101010 : COLOR_DEPTH_888) || stream->timing.flags.DSC)
 			return -EINVAL;
 		for_each_new_connector_in_state(state, connector, con, j) {
 			const struct dc_edid *edid = dv_stream_edid(stream);
@@ -479,14 +524,14 @@ int amdgpu_dm_dv_atomic_check(struct drm_atomic_commit *state)
 			if (connector->connector_type != DRM_MODE_CONNECTOR_HDMIA ||
 			    (stream->dv_low_latency ?
 			     (!lldv_sink_supported(&caps, &cs->mode) ||
-			      to_dm_connector_state(con)->lldv_format != 1 ||
+			      to_dm_connector_state(con)->lldv_format != (native ? AMDGPU_LLDV_RGB10_LAB : 1) ||
 			      to_dm_connector_state(con)->dv_standard) :
 			     (!dv_sink_supported(&caps, &cs->mode) ||
 			      !to_dm_connector_state(con)->dv_standard ||
 			      to_dm_connector_state(con)->lldv_format)) ||
 			    to_dm_connector_state(con)->hdr10_deep_color ||
 			    con->hdr10plus_metadata || con->hdr_output_metadata || con->colorspace ||
-			    con->max_requested_bpc != 8 ||
+			    con->max_requested_bpc != (native ? 10 : 8) ||
 			    con->hdmi.broadcast_rgb != DRM_HDMI_BROADCAST_RGB_FULL ||
 			    to_dm_connector_state(con)->scaling != RMX_OFF ||
 			    to_dm_connector_state(con)->underscan_enable)
@@ -496,7 +541,7 @@ int amdgpu_dm_dv_atomic_check(struct drm_atomic_commit *state)
 		for_each_new_plane_in_state(state, plane, ps, j) {
 			if (ps->crtc != crtc || !ps->fb)
 				continue;
-			if (!dv_plane_neutral(ps, &cs->mode))
+			if (!dv_plane_neutral(ps, &cs->mode, native))
 				return -EINVAL;
 			planes++;
 		}

@@ -8206,7 +8206,7 @@ int amdgpu_dm_connector_atomic_set_property(struct drm_connector *connector,
 	}
 
 	if (property == to_amdgpu_dm_connector(connector)->lldv_format_property) {
-		if (val > 1)
+		if (val != 0 && val != 1 && val != AMDGPU_LLDV_RGB10_LAB)
 			return -EINVAL;
 		dm_new_state->lldv_format = val;
 		return 0;
